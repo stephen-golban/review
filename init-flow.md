@@ -7,7 +7,7 @@ Initialize the review skill for a project. Produces `project-profile.md` and tec
 ### 1.1 Run the Scanner
 
 ```bash
-python <skill-dir>/scripts/scanner.py --path <project-root> --pretty
+python3 <skill-dir>/scripts/scanner.py --path <project-root> --pretty
 ```
 
 Outputs JSON covering: project structure, tech stack, languages, linting config, standards docs, CI/CD, git info. Requires only Python 3.8+ stdlib.

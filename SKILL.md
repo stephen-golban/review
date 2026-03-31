@@ -81,7 +81,7 @@ If mode is `init` or `init-update`, read and follow `init-flow.md` in this skill
 Run the prep script to collect all deterministic context in one call:
 
 ```bash
-python <skill-dir>/scripts/prep.py \
+python3 <skill-dir>/scripts/prep.py \
   --mode <mode> --target "<target>" --project-dir <project-root>
 ```
 

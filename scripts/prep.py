@@ -7,7 +7,7 @@ entry point. Delegates file classification, diff parsing, risk analysis, and
 related utilities to common.py.
 
 Usage:
-    python prep.py --mode <mode> [--target <value>] [options]
+    python3 prep.py --mode <mode> [--target <value>] [options]
 
 Modes:
     auto       Try staged -> unstaged -> branch (default)
@@ -399,7 +399,7 @@ def format_output(
         out.append("")
         source_paths = " ".join(f.path for f in files if not f.is_test and not f.is_config and f.language not in ("Other", "Markdown"))
         out.append("## Cross-File Impact")
-        out.append(f"Run: `python <skill-dir>/scripts/impact-analyzer.py --project-dir <project-root> --files {source_paths[:300]}`")
+        out.append(f"Run: `python3 <skill-dir>/scripts/impact-analyzer.py --project-dir <project-root> --files {source_paths[:300]}`")
 
     return "\n".join(out)
 
