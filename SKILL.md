@@ -16,8 +16,6 @@ allowed-tools:
   - Grep
   - Glob
   - Bash
-  - WebFetch
-  - WebSearch
   - Agent
   - AskUserQuestion
   - mcp__Ref__ref_search_documentation
@@ -174,7 +172,7 @@ Using file clusters and changed functions from prep output:
 For each `[blocking]` or `[important]` finding:
 
 1. If the finding came from a reference file → use the source link already in that file. Confirmed.
-2. If no source link exists → search via `mcp__Ref__ref_search_documentation` or `WebSearch` to verify the claim is correct for the detected version.
+2. If no source link exists → search via `mcp__Ref__ref_search_documentation` or `mcp__Ref__ref_read_url` to verify the claim is correct for the detected version.
 3. **Confirmed** → keep. Attach source link + fix snippet.
 4. **Wrong/outdated** → drop silently. Do NOT include it in the report.
 5. **Inconclusive** (cannot confirm or deny after searching) → keep with `(unverified)` marker.
@@ -314,15 +312,17 @@ If profile has `Offer PR posting: yes`:
 > 2. **Inline comments** — each finding as a comment on the relevant line
 > 3. **Skip** — don't post, just show here
 
-**2. Preview**: Show the **exact text** that will be posted. Not a summary table, not a description of the content — the actual comment body (or for inline mode, show each comment with its file:line target). The user must see what will appear on GitHub. **The posted text MUST match the report mode** — if humanized, the PR comments are humanized prose, not structured markdown.
+**2. Redact secrets**: Before previewing or posting, scan all comment text for patterns matching secrets (API keys, tokens, passwords, connection strings, private keys, `.env` values). Replace any detected secret with `[REDACTED]`. Never reproduce raw credentials in PR comments.
 
-**3. Confirm**: Ask: "post this? (yes / skip)"
+**3. Preview**: Show the **exact text** that will be posted. Not a summary table, not a description of the content — the actual comment body (or for inline mode, show each comment with its file:line target). The user must see what will appear on GitHub. **The posted text MUST match the report mode** — if humanized, the PR comments are humanized prose, not structured markdown.
+
+**4. Confirm**: Ask: "post this? (yes / skip)"
 
 **STOP: WAIT for user confirmation before posting anything.**
 
-**4. Post** based on resolved format:
+**5. Post** based on resolved format:
 - **Single comment** → `gh pr review <PR#> --comment --body "..."`
 - **Inline comments** → post each finding individually: `gh api repos/{owner}/{repo}/pulls/{pr}/comments --method POST -f body="<finding>" -f path="<file>" -f commit_id="$(gh pr view <PR#> --json headRefOid -q .headRefOid)" -F line=<line>`. Post one comment per finding. Do NOT batch into a single API call.
 - **Skip** → do nothing
 
-**5. Apply labels** (only if posting was done, not if skipped): `gh pr edit <PR#> --add-label "<labels>"` using suggested labels from prep output.
+**6. Apply labels** (only if posting was done, not if skipped): `gh pr edit <PR#> --add-label "<labels>"` using suggested labels from prep output.

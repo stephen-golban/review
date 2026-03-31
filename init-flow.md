@@ -93,7 +93,7 @@ Research each key technology in the detected stack. The goal is to produce **con
 
 For each technology (prioritize frameworks, ORMs, major libraries — skip utilities and dev tools):
 
-1. **Find the official docs** for the detected version using `mcp__Ref__ref_search_documentation` first (most token-efficient), `WebSearch` + `WebFetch` as fallback
+1. **Find the official docs** for the detected version using `mcp__Ref__ref_search_documentation` to search, then `mcp__Ref__ref_read_url` to read specific doc pages
 2. **Search specifically for**:
    - Migration guides / breaking changes for the detected version
    - Official "common mistakes" or "pitfalls" pages
