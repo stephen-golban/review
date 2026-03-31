@@ -28,11 +28,11 @@ allowed-tools:
 
 | Input | Mode | Target |
 |---|---|---|
-| `init` | init | — |
-| `init --update` | init-update | — |
-| *(no args)* | auto | — |
-| `staged` | staged | — |
-| `unstaged` | unstaged | — |
+| `init` | init | - |
+| `init --update` | init-update | - |
+| *(no args)* | auto | - |
+| `staged` | staged | - |
+| `unstaged` | unstaged | - |
 | `branch` / `branch <name>` | branch | HEAD or `<name>` |
 | `<PR#>` or `<PR URL>` | pr | `<PR#>` or `<URL>` |
 | `<commit SHA>` | commit | `<SHA>` |
@@ -46,7 +46,7 @@ allowed-tools:
 
 ## MANDATORY: Init Check (runs FIRST, every time)
 
-Before doing ANYTHING else — before parsing arguments, before any review — check if `project-profile.md` exists in this skill's directory.
+Before doing ANYTHING else - before parsing arguments, before any review - check if `project-profile.md` exists in this skill's directory.
 
 **If it does NOT exist**, STOP and tell the user:
 
@@ -58,11 +58,13 @@ Do NOT proceed with any review mode. Do NOT offer to skip init. The only allowed
 
 ---
 
-## Tone Rules
+## Tone Rules (apply to ALL modes)
 
-- No compliments, filler phrases, or positive padding
-- Direct, specific, concise — senior engineer talking to a peer
-- Every sentence delivers information or asks a question — nothing else
+- No compliments, filler phrases, or positive padding ("solid", "clean", "great", "nice", "looks good")
+- Direct, specific, concise - senior engineer talking to a peer
+- Every sentence delivers information or asks a question - nothing else
+- Never output the em dash character (the long unicode dash, U+2014). Always use the regular hyphen-minus.
+- Short sentences. If a sentence has more than one comma-separated clause, split it.
 
 ---
 
@@ -93,6 +95,7 @@ Read the full output. If "No changes found", inform user and stop.
 2. Read each **changed source file** in full (skip binary, lockfiles, generated code)
 3. **MUST read every reference file** from the "Read These References" section of prep output. Resolve paths as `<skill-dir>/reference/<filename>`. Read each file in full using the Read tool.
    - **STOP**: Do NOT proceed to Step 3 until every listed reference file has been read. If a file is missing, note it and continue with the rest.
+   - After reading, confirm to yourself: "Read N/N reference files." If the count doesn't match, go back and read the missing ones.
 4. For file/dir mode: read target files directly
 
 ## Step 3: Run Analysis Tools
@@ -147,22 +150,22 @@ Using file clusters and changed functions from prep output:
 1. Write a 2-3 sentence summary of what changed and why
 2. Group related files and describe each group's purpose in one line
 3. If branch/PR mode and prep output contains "## Commit History": read the commit progression to understand the developer's intent and iteration order. Use this to:
-   - Distinguish intentional design choices from oversights (e.g., a file refactored in commit 2 after being added in commit 1 — the final state is intentional)
+   - Distinguish intentional design choices from oversights (e.g., a file refactored in commit 2 after being added in commit 1 - the final state is intentional)
    - Avoid flagging patterns that were deliberately introduced (commit message says "switch to X approach")
    - Identify when a later commit may have broken something that worked in an earlier commit
 
 ### 4b. Review Protocol
 
-**For each changed file**, apply the following checks **in order**. Do not skip items — if a check has no findings for a file, move to the next check.
+**For each changed file**, apply the following checks **in order**. Do not skip items - if a check has no findings for a file, move to the next check.
 
-1. **Blocking patterns** — compare each change against every pattern in the "Blocking Patterns (from profile)" section of prep output. Any match is `[blocking]`.
-2. **Priority focus areas** — apply extra scrutiny to changes touching areas listed in "Priority Focus (from profile)" section of prep output.
-3. **Generated reference files** — for each finding you consider raising, check whether the reference files you read in Step 2 contain a relevant rule. Cite the reference if so.
-4. **Linter findings** (if Step 3 produced them) — deduplicate against your own findings, promote genuine issues.
-5. **Cross-file impact** (if Step 3 produced results) — flag dependents that import changed modules but are not in the changeset.
-6. **Test coverage gaps** from prep "Test Coverage Gaps" section — suggest specific test cases.
-7. **Dependency vulnerabilities** (if Step 3 produced results) — `[blocking]` if critical/high severity.
-8. **Learned patterns** from prep "Learned Patterns" section — suppress previously dismissed findings, apply corrections the user has taught.
+1. **Blocking patterns** - compare each change against every pattern in the "Blocking Patterns (from profile)" section of prep output. Any match is `[blocking]`.
+2. **Priority focus areas** - apply extra scrutiny to changes touching areas listed in "Priority Focus (from profile)" section of prep output.
+3. **Generated reference files** - for each finding you consider raising, check whether the reference files you read in Step 2 contain a relevant rule. Cite the reference if so.
+4. **Linter findings** (if Step 3 produced them) - deduplicate against your own findings, promote genuine issues.
+5. **Cross-file impact** (if Step 3 produced results) - flag dependents that import changed modules but are not in the changeset.
+6. **Test coverage gaps** from prep "Test Coverage Gaps" section - suggest specific test cases.
+7. **Dependency vulnerabilities** (if Step 3 produced results) - `[blocking]` if critical/high severity.
+8. **Learned patterns** from prep "Learned Patterns" section - suppress previously dismissed findings, apply corrections the user has taught.
 9. **Your own knowledge** of detected languages, frameworks, and their detected versions.
 
 ## Step 5: Validate Findings
@@ -183,7 +186,9 @@ After validation, re-check: does the finding still apply given the full context 
 
 ## Step 6: Report
 
-Check report mode from prep output. **If mode is humanized, skip Standard Mode entirely — go directly to Humanized Mode below.** Do NOT read the Standard Mode template as a starting point for humanized output.
+Check report mode from prep output. **If mode is humanized, skip Standard Mode entirely - go directly to Humanized Mode below.** Do NOT read the Standard Mode template as a starting point for humanized output.
+
+**For PR mode**: after generating the review, go to the "Deliver" subsection below to preview and post. Do NOT ask "want me to post?" - show the preview directly.
 
 ### Standard Mode
 
@@ -192,12 +197,12 @@ Check report mode from prep output. **If mode is humanized, skip Standard Mode e
 <2-3 sentence summary>
 
 ### File Groups
-- **auth/** — Updated login flow (3 files)
+- **auth/** - Updated login flow (3 files)
 
 ## Issues Found
 
 ### [blocking]
-1. **file.ts:42** — Description. Why it matters.
+1. **file.ts:42** - Description. Why it matters.
    ```ts
    // Fix
    <corrected code>
@@ -221,7 +226,7 @@ graph LR
 
 ### Humanized Mode
 
-Humanized mode produces prose paragraphs that read like a senior developer's Slack message. It is NOT standard mode with labels removed.
+PR review comments must look fully human-written. Your team lead flagged AI-augmented PR comments as a "significant HITM guardrail anti-pattern." Humanized mode is NOT standard mode with labels removed - it is a completely different voice.
 
 **NEVER use in humanized mode**:
 - Section headers (`##`, `###`, or any markdown heading)
@@ -229,33 +234,93 @@ Humanized mode produces prose paragraphs that read like a senior developer's Sla
 - Severity labels (`[blocking]`, `[important]`, `[nit]`)
 - Code block fences for fix suggestions (use inline backticks only)
 - Summary tables or structured formatting of any kind
-- AI tells: "heads up", "nit:", "it's worth noting", "consider", "ensure", "I noticed that", "LGTM", "I'd suggest"
+- The em dash character (the long unicode dash, U+2014) - it looks drawn/AI-generated. Use the regular hyphen-minus only.
+- Compliments, positive padding, or filler: "solid", "clean", "great", "nice", "looks good to ship", "no issues", "LGTM", "well done", "good job", "no security concerns"
+- AI tells: "heads up", "nit:", "it's worth noting", "consider", "ensure", "I noticed that", "I'd suggest", "one thing to be aware of", "just worth knowing", "just be aware", "be aware", "worth a look", "worth noting", "is that the intent"
+- Multi-clause compound sentences - keep sentences short, one or two per thought max
 
 **ALWAYS in humanized mode**:
 - Write in lowercase, casual prose. Short sentences. Paragraphs, not lists.
 - Refer to code with inline backticks: `functionName`
 - Ask questions naturally: "any reason to go with X here?"
-- Group related thoughts into the same paragraph
+- Combine related thoughts into the same paragraph - don't split related findings into separate comments
+- Use the regular hyphen-minus character only. Never the long em dash (U+2014).
+- Every sentence delivers information or asks a question. Nothing else.
 
-**Example — WRONG** (standard mode habits leaking in):
+**Example - WRONG** (AI tells, positive padding):
+
+> solid addition for PII scrubbing. one thing to be aware of, the "auth" keyword will substring-match against "author". great for debugging user issues, just be aware it'll bump recording size. no blocking issues, clean typescript. looks good to ship.
+
+**Example - RIGHT**:
+
+> `BODY_DENY_KEYWORDS` has "auth" which substring-matches "author", "authority" etc - if you see over-redacted recordings later that's why. `PII_FIELDS` covers first/last name but not bare `name` so full names in a single field pass through unmasked. also `canvasFps: 4` in a logo editor means canvas frames in every recording - intentional? bumps recording size vs DOM-only.
+
+**Example - WRONG** (structured, long, AI voice):
 
 > ## Issues Found
 > ### [blocking]
-> 1. **auth.ts:42** — Missing input validation...
+> 1. **auth.ts:42** - Missing input validation...
 
-**Example — RIGHT**:
+**Example - RIGHT**:
 
-> the main thing that jumped out is auth.ts around line 42 — the user input goes straight into the query without validation, which is a sql injection risk. wrapping it in `sanitizeInput()` would fix it. also worth a look: the retry logic in `fetchData` doesn't have a backoff, so if the upstream is down you'll hammer it pretty fast.
+> auth.ts around line 42 - user input goes straight into the query without validation, sql injection risk. wrapping it in `sanitizeInput()` fixes it. the retry logic in `fetchData` doesn't backoff either so if upstream is down you'll hammer it.
 
 Zero issues → "looks clean, nothing jumped out."
 
+**PR mode**: do NOT output the review text here. Generate it internally, then go to Deliver below where it will be shown as the preview with file:line targets. The preview IS the review - showing it twice is redundant.
+
+### Deliver
+
+**All non-PR modes**: the report shown above IS the delivery. Skip to Step 7.
+
+**PR mode with `Offer PR posting: no`** (or field missing): show the review in conversation only. Skip to Step 7.
+
+**PR mode with `Offer PR posting: yes`**: preview, confirm, then post. **The preview IS the review** - do NOT show a separate prose review before the preview. Go straight to showing the inline comments or single comment body below.
+
+**1. Resolve format**: Check the profile's `Posting format` field. If it specifies `single` or `inline`, use that - do NOT ask the user again. Only ask if the field is missing or empty:
+
+> Post to PR? Choose format:
+> 1. Single comment - full review as one summary
+> 2. Inline comments - each finding on the relevant line
+> 3. Skip - don't post
+
+**2. Redact secrets**: Before previewing or posting, scan all comment text for patterns matching secrets (API keys, tokens, passwords, connection strings, private keys, `.env` values). Replace any detected secret with `[REDACTED]`.
+
+**3. Preview (MANDATORY - do NOT ask "want me to post?" without showing what will be posted)**:
+
+For **inline mode in humanized report**, present each comment as a separate humanized prose snippet with its file:line target. Each comment is independent - do not write one big block and split it later. Write each comment individually:
+
+```
+**posthog-network-scrubber.ts:30**
+> `BODY_DENY_KEYWORDS` has "auth" which substring-matches "author", "authority" etc - if you see over-redacted recordings that's why.
+
+**posthog-network-scrubber.ts:49**
+> `PII_FIELDS` has first/last name but not bare `name` - full names in a single field pass through.
+```
+
+For **single comment mode**, show the full comment body.
+
+The user MUST see exactly what will appear on GitHub before any posting happens. Combine related findings into one comment where they touch the same concern.
+
+**4. Confirm**: Ask: "post these? (yes / edit / skip)"
+
+**STOP: WAIT for user confirmation before posting anything.**
+
+**5. Post** based on resolved format:
+- **Single comment**: `gh pr review <PR#> --comment --body "..."`
+- **Inline comments**: post each finding individually via `gh api repos/{owner}/{repo}/pulls/{pr}/comments --method POST -f body="<finding>" -f path="<file>" -f commit_id="$(gh pr view <PR#> --json headRefOid -q .headRefOid)" -F line=<line>`. One comment per API call.
+- **Skip**: do nothing
+
+**6. Apply labels** (only if posting was done): `gh pr edit <PR#> --add-label "<labels>"` using suggested labels from prep output.
+
 ## Step 7: Apply Fixes (Optional)
 
-After the report, offer to apply fixes:
+After the report (and after posting if PR mode), offer to apply fixes **only if there are actionable findings**. If there are zero findings, skip directly to Step 8.
 
-> Apply fixes? (all, #1 #3, or skip)
+In humanized mode: "want me to fix any of these?"
+In standard mode: "Apply fixes? (all, #1 #3, or skip)"
 
-Use Edit to apply directly. In humanized mode: "want me to fix these?"
+Use Edit to apply directly.
 
 **STOP: WAIT for the user's response before proceeding to Step 8.** Do NOT combine this prompt with the feedback prompt. Handle the user's fix request (or skip) completely before moving on.
 
@@ -270,10 +335,13 @@ Entry format:
 {"<mode>/<target>": {"last_reviewed_sha": "<HEAD>", "last_review_date": "<ISO8601>", "findings_count": N, "previous_findings": ["summary1", "summary2"]}}
 ```
 
-**MUST use Read then Edit, NOT Write.** The file may contain entries from previous reviews of other branches/PRs. Steps:
-1. **Read** `review-state.json` with the Read tool. If it doesn't exist, create it with Write containing only the new entry.
-2. **Edit** the file to add/update the entry for `<mode>/<target>`, preserving all other entries.
-3. NEVER use Write to overwrite this file when it already exists.
+**CRITICAL: MUST use Read then Edit, NOT Write.** The file contains entries from previous reviews of other branches/PRs. Using Write destroys all previous review state.
+
+Steps:
+1. **Read** `review-state.json` with the Read tool first.
+2. If the file does NOT exist, create it with Write containing only the new entry.
+3. If the file DOES exist, use **Edit** (not Write) to add/update the entry for `<mode>/<target>`, preserving ALL other entries.
+4. **NEVER use Write on an existing review-state.json** - this has caused data loss of previous review entries.
 
 ### Log to history
 
@@ -285,7 +353,7 @@ Append one JSON line to `review-history.jsonl` in the skill directory:
 
 ### Collect feedback
 
-After delivery (and after any fix application from Step 7 is complete), ask:
+After Step 7 is complete (fix application handled or skipped), ask:
 
 > Dismiss any findings? (# to dismiss, or skip)
 
@@ -297,32 +365,3 @@ For each dismissed finding, append to `feedback.jsonl` in the skill directory:
 {"id": "<uuid>", "timestamp": "<ISO8601>", "type": "dismiss", "finding": "<description>", "file_pattern": "<*.ext>", "reason": "<user explanation>"}
 ```
 
-### Deliver
-
-**All non-PR modes** — present report directly in conversation. Skip the rest of this section.
-
-**PR mode** — preview, confirm, then post.
-
-If profile has `Offer PR posting: yes`:
-
-**1. Resolve format**: Check the profile's `Posting format` field. If it specifies `single` or `inline`, use that — do NOT ask the user again. Only ask if the field is missing or empty:
-
-> Post to PR? Choose format:
-> 1. **Single comment** — full review as one summary comment
-> 2. **Inline comments** — each finding as a comment on the relevant line
-> 3. **Skip** — don't post, just show here
-
-**2. Redact secrets**: Before previewing or posting, scan all comment text for patterns matching secrets (API keys, tokens, passwords, connection strings, private keys, `.env` values). Replace any detected secret with `[REDACTED]`. Never reproduce raw credentials in PR comments.
-
-**3. Preview**: Show the **exact text** that will be posted. Not a summary table, not a description of the content — the actual comment body (or for inline mode, show each comment with its file:line target). The user must see what will appear on GitHub. **The posted text MUST match the report mode** — if humanized, the PR comments are humanized prose, not structured markdown.
-
-**4. Confirm**: Ask: "post this? (yes / skip)"
-
-**STOP: WAIT for user confirmation before posting anything.**
-
-**5. Post** based on resolved format:
-- **Single comment** → `gh pr review <PR#> --comment --body "..."`
-- **Inline comments** → post each finding individually: `gh api repos/{owner}/{repo}/pulls/{pr}/comments --method POST -f body="<finding>" -f path="<file>" -f commit_id="$(gh pr view <PR#> --json headRefOid -q .headRefOid)" -F line=<line>`. Post one comment per finding. Do NOT batch into a single API call.
-- **Skip** → do nothing
-
-**6. Apply labels** (only if posting was done, not if skipped): `gh pr edit <PR#> --add-label "<labels>"` using suggested labels from prep output.

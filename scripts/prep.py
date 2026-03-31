@@ -142,44 +142,18 @@ def parse_profile(path: Path) -> Dict[str, Any]:
 def find_relevant_refs(
     skill_dir: Path, generated_refs: List[str], files: List[FileInfo]
 ) -> List[str]:
-    """Return list of generated reference files relevant to the changed files."""
+    """Return list of generated reference files relevant to the changed files.
+
+    All generated refs are project-specific (created during /review init for
+    this project's tech stack), so include every one that exists on disk.
+    Reference files are kept short (50-120 lines) specifically to make reading
+    them all feasible for every review.
+    """
     if not generated_refs:
         return []
 
-    # Collect languages present in the diff
-    langs = set()
-    for f in files:
-        if f.language != "Other":
-            langs.add(f.language.lower().split("/")[0])  # "TypeScript/React" -> "typescript"
-
-    relevant = []
     ref_dir = skill_dir / "reference"
-    for ref_name in generated_refs:
-        ref_path = ref_dir / ref_name
-        if not ref_path.is_file():
-            continue
-        # Match ref filename stem against detected languages
-        stem = ref_path.stem.lower().replace("-", " ").replace("_", " ")
-        # Always include if any language word appears in the filename
-        if any(lang in stem for lang in langs):
-            relevant.append(ref_name)
-        # Also include if ref stem matches common framework names in the files
-        elif _ref_matches_files(stem, files):
-            relevant.append(ref_name)
-        # If few refs exist, just include them all (cheap to read)
-        elif len(generated_refs) <= 3:
-            relevant.append(ref_name)
-
-    return relevant
-
-
-def _ref_matches_files(ref_stem: str, files: List[FileInfo]) -> bool:
-    """Check if a reference file's topic matches any changed file paths."""
-    keywords = ref_stem.split()
-    return any(
-        any(kw in f.path.lower() for kw in keywords)
-        for f in files
-    )
+    return [r for r in generated_refs if (ref_dir / r).is_file()]
 
 
 # -- Data file reading (inline) --------------------------------------------
