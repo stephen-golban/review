@@ -79,6 +79,9 @@ Ask targeted questions in 2-3 batches. Do NOT dump all questions at once.
 > 2. **Humanized** — reads like a human dev, casual tone, no AI tells
 >
 > **Post comments directly to PRs?** (yes/no)
+> If yes: **Posting format?**
+> 1. **Single comment** — full review as one summary comment
+> 2. **Inline comments** — each finding as a comment on the relevant line
 
 For `--update` mode: skip full interview. Ask "What would you like to update?" and apply changes to existing profile.
 
@@ -159,6 +162,7 @@ Write to this skill's directory:
 ## Review Workflow
 - **Report mode**: standard | humanized
 - **Offer PR posting**: yes/no
+- **Posting format**: single | inline
 ```
 
 ### 4.2 Generate Tech-Specific Reference Files

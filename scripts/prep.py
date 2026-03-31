@@ -94,6 +94,7 @@ def parse_profile(path: Path) -> Dict[str, Any]:
         "priorities": [],
         "report_mode": "standard",
         "pr_posting": False,
+        "posting_format": None,
         "generated_refs": [],
     }
     if not path.is_file():
@@ -111,6 +112,10 @@ def parse_profile(path: Path) -> Dict[str, Any]:
 
     if re.search(r"\*\*Offer PR posting\*\*:\s*yes", content, re.IGNORECASE):
         defaults["pr_posting"] = True
+
+    m = re.search(r"\*\*Posting format\*\*:\s*(\S+)", content)
+    if m:
+        defaults["posting_format"] = m.group(1).lower()
 
     block_sec = re.search(r"## Blocking Patterns\n(.*?)(?=\n## |\Z)", content, re.DOTALL)
     if block_sec:
@@ -397,9 +402,8 @@ def format_output(
     source_count = len([f for f in files if not f.is_test and not f.is_config and f.language not in ("Other", "Markdown")])
     if source_count > 1 and mode in ("branch", "pr", "commit"):
         out.append("")
-        source_paths = " ".join(f.path for f in files if not f.is_test and not f.is_config and f.language not in ("Other", "Markdown"))
         out.append("## Cross-File Impact")
-        out.append(f"Run: `python3 <skill-dir>/scripts/impact-analyzer.py --project-dir <project-root> --files {source_paths[:300]}`")
+        out.append("Use Grep to find files that import changed modules (see SKILL.md Step 3).")
 
     return "\n".join(out)
 
