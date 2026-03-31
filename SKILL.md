@@ -44,7 +44,19 @@ allowed-tools:
 | `feedback` | feedback | show learned patterns from `feedback.jsonl` |
 | `history` | history | show recent reviews from `review-history.jsonl` |
 
-**Before Review Flow**: if `project-profile.md` doesn't exist in this skill's directory, inform user and auto-trigger Init Flow.
+---
+
+## MANDATORY: Init Check (runs FIRST, every time)
+
+Before doing ANYTHING else — before parsing arguments, before any review — check if `project-profile.md` exists in this skill's directory.
+
+**If it does NOT exist**, STOP and tell the user:
+
+> This project hasn't been initialized yet. Run `/review init` first to set up your project profile and tech-specific references. This only takes a minute and makes every future review significantly better.
+
+Do NOT proceed with any review mode. Do NOT offer to skip init. The only allowed actions without a profile are `init` and `init --update`.
+
+**If it exists**, proceed normally.
 
 ---
 
@@ -255,9 +267,17 @@ For each dismissed finding, append to `feedback.jsonl` in the skill directory:
 
 **PR mode** — show preview first, wait for confirmation.
 
-If profile has `Offer PR posting: yes`:
-- **Standard** → `gh pr review <PR#> --comment --body "..."`
-- **Humanized** → inline comments: `gh api repos/{owner}/{repo}/pulls/{pr}/comments`
+If profile has `Offer PR posting: yes`, ask the user:
+
+> Post to PR? Choose format:
+> 1. **Single comment** — full review as one summary comment
+> 2. **Inline comments** — each finding as a comment on the relevant line
+> 3. **Skip** — don't post, just show here
+
+Based on choice:
+- **Single comment** → `gh pr review <PR#> --comment --body "..."`
+- **Inline comments** → for each finding with a file:line, post: `gh api repos/{owner}/{repo}/pulls/{pr}/comments --method POST -f body="<finding>" -f path="<file>" -f commit_id="$(gh pr view <PR#> --json headRefOid -q .headRefOid)" -F line=<line>`
+- **Skip** → do nothing
 
 Apply suggested labels if posting: `gh pr edit <PR#> --add-label "<labels>"`
 
