@@ -96,6 +96,8 @@ def parse_profile(path: Path) -> Dict[str, Any]:
         "pr_posting": False,
         "posting_format": None,
         "generated_refs": [],
+        "suppressions": [],
+        "boosts": [],
     }
     if not path.is_file():
         return defaults
@@ -134,6 +136,21 @@ def parse_profile(path: Path) -> Dict[str, Any]:
     for m in re.finditer(r"reference/(\S+\.md)", content):
         defaults["generated_refs"].append(m.group(1))
 
+    # Parse learned suppressions and boosts
+    sup_sec = re.search(r"## Learned Suppressions\n(.*?)(?=\n## |\Z)", content, re.DOTALL)
+    if sup_sec:
+        for line in sup_sec.group(1).strip().splitlines():
+            line = line.strip()
+            if line.startswith("- "):
+                defaults["suppressions"].append(line[2:])
+
+    boost_sec = re.search(r"## Learned Boosts\n(.*?)(?=\n## |\Z)", content, re.DOTALL)
+    if boost_sec:
+        for line in boost_sec.group(1).strip().splitlines():
+            line = line.strip()
+            if line.startswith("- "):
+                defaults["boosts"].append(line[2:])
+
     return defaults
 
 
@@ -159,19 +176,23 @@ def find_relevant_refs(
 # -- Data file reading (inline) --------------------------------------------
 
 def read_feedback(skill_dir: Path, files: List[FileInfo]) -> Optional[str]:
-    """Read feedback.jsonl and return relevant learned patterns."""
+    """Read feedback.jsonl and return relevant learned patterns with stats."""
     fb_path = skill_dir / "feedback.jsonl"
     if not fb_path.is_file():
         return None
     try:
+        raw_lines = fb_path.read_text(errors="replace").strip().splitlines()
+        # Only parse last 200 entries to avoid bloat on long-running projects
+        raw_lines = raw_lines[-200:] if len(raw_lines) > 200 else raw_lines
         entries = []
-        for line in fb_path.read_text(errors="replace").strip().splitlines():
+        for line in raw_lines:
             try:
                 entries.append(json.loads(line))
             except json.JSONDecodeError:
                 continue
         if not entries:
             return None
+
         # Filter to relevant entries (match by file extension)
         file_exts = {os.path.splitext(f.path)[1] for f in files}
         relevant = []
@@ -181,12 +202,40 @@ def read_feedback(skill_dir: Path, files: List[FileInfo]) -> Optional[str]:
                 relevant.append(e)
         if not relevant:
             return None
-        lines = ["## Learned Patterns\n"]
-        for e in relevant[:10]:
+
+        # Compute category stats
+        cat_stats: Dict[str, Dict[str, int]] = {}
+        for e in relevant:
+            cat = e.get("category", "unknown")
             action = e.get("type", "note")
-            finding = e.get("finding", "")
-            reason = e.get("reason", "")
-            lines.append(f"- **{action}**: {finding} — {reason}")
+            if cat not in cat_stats:
+                cat_stats[cat] = {"accept": 0, "dismiss": 0}
+            if action in ("accept", "dismiss"):
+                cat_stats[cat][action] += 1
+
+        lines = ["## Learned Patterns\n"]
+
+        # Show category accuracy stats if we have enough data
+        if cat_stats:
+            lines.append("**Category accuracy (accept/dismiss):**")
+            for cat, stats in sorted(cat_stats.items()):
+                total = stats["accept"] + stats["dismiss"]
+                if total >= 2:
+                    rate = stats["accept"] / total * 100
+                    lines.append(f"- {cat}: {stats['accept']}/{total} ({rate:.0f}% accepted)")
+            lines.append("")
+
+        # Show recent dismissals (most useful for suppression)
+        dismissals = [e for e in relevant if e.get("type") == "dismiss"]
+        if dismissals:
+            lines.append("**Recent dismissals:**")
+            for e in dismissals[-10:]:
+                finding = e.get("finding", "")
+                reason = e.get("reason", "")
+                cat = e.get("category", "")
+                cat_tag = f" [{cat}]" if cat else ""
+                lines.append(f"- {finding}{cat_tag} — {reason}")
+
         return "\n".join(lines)
     except Exception:
         return None
@@ -348,6 +397,21 @@ def format_output(
         out.append("## Priority Focus (from profile)\n")
         for i, p in enumerate(profile["priorities"], 1):
             out.append(f"{i}. {p}")
+        out.append("")
+
+    # -- Learned suppressions and boosts ------------------------------------
+    if profile.get("suppressions"):
+        out.append("## Learned Suppressions (from profile)\n")
+        out.append("These categories were repeatedly dismissed. Skip unless clearly different from past dismissals.")
+        for s in profile["suppressions"]:
+            out.append(f"- {s}")
+        out.append("")
+
+    if profile.get("boosts"):
+        out.append("## Learned Boosts (from profile)\n")
+        out.append("These categories have high acceptance. Apply extra scrutiny.")
+        for b in profile["boosts"]:
+            out.append(f"- {b}")
         out.append("")
 
     # -- Generated refs to load ---------------------------------------------
