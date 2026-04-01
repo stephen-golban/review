@@ -17,8 +17,6 @@ allowed-tools:
   - Bash
   - Agent
   - AskUserQuestion
-  - mcp__Ref__ref_search_documentation
-  - mcp__Ref__ref_read_url
 ---
 
 # Code Review
@@ -38,6 +36,7 @@ allowed-tools:
 | `<SHA>..<SHA>` | commit | `<range>` |
 | `<file path>` | file | `<path>` |
 | `<directory>` | dir | `<path>` |
+| `quick` / `quick <mode>` | quick | Same as mode but fast: skip context, cross-file, low-confidence patterns |
 | `feedback` | feedback | show learned patterns from `feedback.jsonl` |
 | `history` | history | show recent reviews from `review-history.jsonl` |
 

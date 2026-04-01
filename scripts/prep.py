@@ -241,32 +241,158 @@ def read_feedback(skill_dir: Path, files: List[FileInfo]) -> Optional[str]:
         return None
 
 
-def read_review_state(skill_dir: Path, mode: str, target: Optional[str]) -> Optional[str]:
-    """Read review-state.json for incremental review context."""
-    if not target or mode not in ("pr", "branch"):
+def extract_change_intent(
+    mode: str, target: Optional[str], base: str, project_dir: str
+) -> Optional[str]:
+    """Extract change intent from commit messages and PR description."""
+    messages: List[str] = []
+
+    if mode == "pr" and target:
+        # Fetch PR title and body
+        pr_info = run_cmd(
+            ["gh", "pr", "view", str(target), "--json", "title,body",
+             "-q", '.title + "\\n" + .body'],
+            project_dir,
+        )
+        if pr_info and pr_info.strip():
+            messages.append(pr_info.strip())
+    elif mode == "branch":
+        ref = target or "HEAD"
+        log = run_cmd(
+            ["git", "log", "--format=%s%n%b", f"{base}...{ref}"],
+            project_dir,
+        )
+        if log and log.strip():
+            messages.append(log.strip())
+    elif mode == "commit" and target:
+        if ".." in target:
+            log = run_cmd(
+                ["git", "log", "--format=%s%n%b", target], project_dir
+            )
+        else:
+            log = run_cmd(
+                ["git", "log", "-1", "--format=%s%n%b", str(target)], project_dir
+            )
+        if log and log.strip():
+            messages.append(log.strip())
+    elif mode in ("staged", "unstaged"):
+        # Check for recent commits on current branch for context
+        log = run_cmd(
+            ["git", "log", "-3", "--format=%s"], project_dir
+        )
+        if log and log.strip():
+            messages.append(log.strip())
+
+    if not messages:
         return None
+
+    text = "\n".join(messages)
+
+    # Classify intent from keywords
+    intent_signals: List[str] = []
+    text_lower = text.lower()
+
+    intent_map = [
+        (["fix", "bug", "hotfix", "patch", "resolve", "closes #", "fixes #"],
+         "bug fix"),
+        (["feat", "feature", "add", "implement", "introduce", "new"],
+         "new feature"),
+        (["refactor", "cleanup", "clean up", "reorganize", "restructure", "rename"],
+         "refactoring"),
+        (["revert", "rollback", "undo"], "revert"),
+        (["migrat", "upgrade", "bump", "update dep", "update version"],
+         "migration/upgrade"),
+        (["security", "vuln", "cve", "auth", "permission", "sanitiz"],
+         "security-related"),
+        (["perf", "optim", "speed", "cache", "fast"], "performance"),
+        (["test", "spec", "coverage"], "testing"),
+        (["doc", "readme", "comment", "changelog"], "documentation"),
+        (["ci", "deploy", "pipeline", "workflow", "action"], "CI/CD"),
+    ]
+
+    for keywords, label in intent_map:
+        if any(kw in text_lower for kw in keywords):
+            intent_signals.append(label)
+
+    # Check for referenced issues
+    issue_refs = re.findall(r"(?:closes?|fixes?|resolves?)\s+#(\d+)", text_lower)
+    issue_refs += re.findall(r"#(\d+)", text)
+
+    # Check for "intentional" signals (author explicitly stating a choice)
+    intentional_phrases = [
+        "intentional", "by design", "on purpose", "deliberately",
+        "this is expected", "known trade-off", "temporary workaround",
+    ]
+    has_intentional = any(p in text_lower for p in intentional_phrases)
+
+    # Build output
+    lines = ["## Change Intent\n"]
+
+    if intent_signals:
+        lines.append(f"**Type**: {', '.join(dict.fromkeys(intent_signals))}")
+
+    if issue_refs:
+        unique_issues = list(dict.fromkeys(issue_refs))[:5]
+        lines.append(f"**References**: {', '.join('#' + i for i in unique_issues)}")
+
+    if has_intentional:
+        lines.append("**Author signals intentional choices** - verify before flagging as issues")
+
+    # Include truncated summary of commit messages / PR body
+    summary = text[:500]
+    if len(text) > 500:
+        summary += "..."
+    lines.append(f"\n**Summary**:\n{summary}")
+
+    return "\n".join(lines)
+
+
+def read_review_state(
+    skill_dir: Path, mode: str, target: Optional[str], project_dir: str = "."
+) -> Tuple[Optional[str], Optional[str]]:
+    """Read review-state.json for incremental review context.
+
+    Returns (display_text, incremental_sha). incremental_sha is non-None only
+    when the previous SHA is a valid ancestor of HEAD (safe to use as diff base).
+    """
+    if not target or mode not in ("pr", "branch"):
+        return None, None
     state_path = skill_dir / "review-state.json"
     if not state_path.is_file():
-        return None
+        return None, None
     try:
         data = json.loads(state_path.read_text(errors="replace"))
         key = f"{mode}/{target}"
         entry = data.get(key)
         if not entry:
-            return None
+            return None, None
         sha = entry.get("last_reviewed_sha", "unknown")
         count = entry.get("findings_count", 0)
         findings = entry.get("previous_findings", [])
+
+        # Verify SHA is a valid ancestor of HEAD (safe for incremental diff)
+        incremental_sha = None
+        if sha != "unknown":
+            check = run_cmd(
+                ["git", "merge-base", "--is-ancestor", sha, "HEAD"],
+                project_dir,
+            )
+            if check is not None:  # exit code 0 = is ancestor
+                incremental_sha = sha
+
         lines = [f"## Previous Review\n"]
         lines.append(f"**Last reviewed at**: {sha} ({count} findings)")
+        if incremental_sha:
+            lines.append(f"**Incremental mode**: reviewing only changes since `{sha}`")
         if findings:
             lines.append("Previous findings:")
             for f in findings[:5]:
                 lines.append(f"- {f}")
-        lines.append(f"\nUse incremental diff from `{sha}` to review only new changes.")
-        return "\n".join(lines)
+        if not incremental_sha:
+            lines.append(f"\nPrevious SHA not reachable from HEAD - running full review.")
+        return "\n".join(lines), incremental_sha
     except Exception:
-        return None
+        return None, None
 
 
 # -- Output formatting -----------------------------------------------------
@@ -288,6 +414,8 @@ def format_output(
     feedback_output: Optional[str] = None,
     prev_review: Optional[str] = None,
     linters_detected: bool = False,
+    change_intent: Optional[str] = None,
+    ci_failures: Optional[str] = None,
 ) -> str:
     total_add = sum(f.additions for f in files)
     total_del = sum(f.deletions for f in files)
@@ -316,6 +444,11 @@ def format_output(
     if labels:
         out.append(f"**Suggested labels**: {', '.join(labels)}")
     out.append("")
+
+    # -- Change intent --------------------------------------------------------
+    if change_intent:
+        out.append(change_intent)
+        out.append("")
 
     # -- Previous review state (incremental) --------------------------------
     if prev_review:
@@ -348,6 +481,11 @@ def format_output(
         out.append("## Risk Factors\n")
         for r in risks:
             out.append(f"- {r}")
+        out.append("")
+
+    # -- CI failures --------------------------------------------------------
+    if ci_failures:
+        out.append(ci_failures)
         out.append("")
 
     # -- Test coverage gaps -------------------------------------------------
@@ -459,6 +597,12 @@ def main() -> None:
     parser.add_argument("--profile", default=None)
     parser.add_argument("--skill-dir", default=None)
     parser.add_argument("--project-dir", default=".")
+    parser.add_argument("--analyze", action="store_true",
+                        help="Also run analyze.py and append review package to output")
+    parser.add_argument("--analyze-output", default=None,
+                        help="When --analyze is set, write review package here (default: append to stdout)")
+    parser.add_argument("--analyze-quick", action="store_true",
+                        help="Pass --quick to analyze.py (skip context, cross-file, low-confidence patterns)")
     args = parser.parse_args()
 
     skill_dir = Path(args.skill_dir).resolve() if args.skill_dir else Path(__file__).parent.parent.resolve()
@@ -538,6 +682,30 @@ def main() -> None:
             if log:
                 commit_log = log
 
+    # -- CI failure detection (PR mode only) ---------------------------------
+    ci_failures: Optional[str] = None
+    if mode == "pr" and target:
+        checks_json = run_cmd(
+            ["gh", "pr", "checks", str(target), "--json", "name,state,conclusion"],
+            str(project_dir),
+        )
+        if checks_json:
+            try:
+                checks = json.loads(checks_json)
+                failed = [c for c in checks if c.get("conclusion") == "failure"]
+                if failed:
+                    lines_ci = ["## CI Failures\n"]
+                    lines_ci.append(f"{len(failed)} check(s) failed:\n")
+                    for c in failed[:5]:
+                        lines_ci.append(f"- **{c.get('name', 'unknown')}**: {c.get('state', '')}")
+                    lines_ci.append("\nCross-reference these failures against the changed code during review.")
+                    ci_failures = "\n".join(lines_ci)
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+    # -- Extract change intent from commits/PR description ------------------
+    change_intent = extract_change_intent(mode, target, base, str(project_dir))
+
     # -- Match generated references -----------------------------------------
     relevant_refs = find_relevant_refs(
         skill_dir, profile.get("generated_refs", []), files
@@ -567,7 +735,25 @@ def main() -> None:
     feedback_output = read_feedback(skill_dir, files)
 
     # -- Load previous review state (incremental) -- inline -----------------
-    prev_review = read_review_state(skill_dir, mode, target)
+    prev_review, incremental_sha = read_review_state(
+        skill_dir, mode, target, str(project_dir)
+    )
+
+    # If we have a valid incremental SHA, re-fetch diff for only new changes
+    if incremental_sha and mode in ("pr", "branch"):
+        incr_name_cmd = ["git", "diff", "--name-only", f"{incremental_sha}..HEAD"]
+        incr_diff_cmd = ["git", "diff", f"{incremental_sha}..HEAD"]
+        incr_file_str = run_cmd(incr_name_cmd, str(project_dir))
+        if incr_file_str and incr_file_str.strip():
+            # Incremental diff has changes - use it
+            incr_files = [f for f in incr_file_str.strip().splitlines() if f.strip()]
+            incr_diff = run_cmd(incr_diff_cmd, str(project_dir), timeout=60)
+            if incr_diff:
+                diff_cmd = incr_diff_cmd
+                diff_content = incr_diff
+                files = build_file_infos(incr_files, incr_diff)
+                risks = identify_risks(files)
+                cplx = complexity_score(files)
 
     # -- Detect available linters (config file check only) ------------------
     linter_configs = {
@@ -606,8 +792,47 @@ def main() -> None:
         feedback_output=feedback_output,
         prev_review=prev_review,
         linters_detected=linters_detected,
+        change_intent=change_intent,
+        ci_failures=ci_failures,
     )
     print(output)
+
+    # -- Optional: run analyze.py with cached diff (avoids re-fetching) -----
+    if args.analyze and diff_content and diff_cmd:
+        import tempfile
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".diff", prefix="review-diff-", delete=False
+        ) as tmp:
+            tmp.write(diff_content)
+            tmp_path = tmp.name
+
+        analyze_cmd = [
+            sys.executable, str(skill_dir / "scripts" / "analyze.py"),
+            "--diff-file", tmp_path,
+            "--project-dir", str(project_dir),
+            "--skill-dir", str(skill_dir),
+        ]
+        if args.analyze_output:
+            analyze_cmd.extend(["--output", args.analyze_output])
+        if args.analyze_quick:
+            analyze_cmd.append("--quick")
+
+        import subprocess as _sp
+        try:
+            result = _sp.run(analyze_cmd, capture_output=True, text=True, timeout=120)
+            if result.returncode == 0 and result.stdout.strip():
+                if not args.analyze_output:
+                    print("\n---\n")
+                    print(result.stdout)
+            if result.stderr:
+                print(result.stderr, file=sys.stderr)
+        except Exception as e:
+            print(f"analyze.py error: {e}", file=sys.stderr)
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
 
 
 if __name__ == "__main__":

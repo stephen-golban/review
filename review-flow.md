@@ -7,18 +7,31 @@
 3. **Credibility is the product.** Three verified catches beat eight half-baked observations.
 4. **Evolve.** Track what gets accepted vs dismissed. Suppress what doesn't land. Boost what does.
 
-## Step 1: Prepare
+## Step 1: Prepare + Analyze
+
+Run a single combined command that prepares AND analyzes in one pass (avoids redundant diff fetching):
 
 ```bash
 python3 <skill-dir>/scripts/prep.py \
-  --mode <mode> --target "<target>" --project-dir <project-root>
+  --mode <mode> --target "<target>" --project-dir <project-root> \
+  --analyze --analyze-output /tmp/review-pkg-$$.md
 ```
 
-Read the prep output (small, stays in context). If "No changes found", tell user and stop.
+Use `$$` (shell PID) or a timestamp to avoid collisions between parallel reviews. The temp file is deleted automatically in Wrap-up.
 
-## Step 2: Analyze
+This outputs: prep report to stdout (small, stays in context) + review package to the temp file. If "No changes found", tell user and stop.
 
-Run the analysis engine to extract a compact review package:
+The review package contains: changed hunks with surrounding context, pattern scan warnings (multi-language), cross-file impact, removed exports, signature changes, reference rule matches.
+
+**Quick mode**: If the user invoked `/review quick` OR prep output shows <100 changed lines AND <3 files, add `--quick` to the analyze command. Quick mode skips context extraction, cross-file impact, and low-confidence patterns. Target: sub-30s. Still catches high-confidence bugs and removed exports.
+
+```bash
+python3 <skill-dir>/scripts/prep.py \
+  --mode <mode> --target "<target>" --project-dir <project-root> \
+  --analyze --analyze-output /tmp/review-pkg-$$.md --analyze-quick
+```
+
+**Fallback** (if --analyze fails or you need to re-run analysis separately):
 
 ```bash
 python3 <skill-dir>/scripts/analyze.py \
@@ -28,9 +41,12 @@ python3 <skill-dir>/scripts/analyze.py \
   --output /tmp/review-pkg-$$.md
 ```
 
-Use `$$` (shell PID) or a timestamp to avoid collisions between parallel reviews. The file is deleted automatically in Wrap-up.
+### Incremental reviews
 
-The script extracts: changed hunks with surrounding context, pattern scan warnings, cross-file impact, reference rule matches. It does the heavy data lifting so you don't bloat context with raw source.
+If prep output contains **"## Previous Review"** with **"Incremental mode"**, only new changes since the last review are in the diff. Focus on:
+- New code only. Do not re-flag previous findings unless the new code makes them worse.
+- Check if new changes interact with previous findings (listed in the section).
+- If a previous finding was about missing error handling and the new code adds more call sites, escalate it.
 
 ### Adaptive context strategy
 
@@ -75,6 +91,12 @@ If prep output contains **"## Dependency Changes Detected"**, run the audit:
 
 Run linter/audit in parallel with analyze.py using Agent if both apply. Skip silently if tools aren't installed.
 
+**Dependency vulnerability triage:**
+When audit results contain critical or high severity vulnerabilities:
+- **Newly added dependency** (appears in the diff additions): `[blocking]` with package name, CVE/advisory ID, severity
+- **Pre-existing dependency** (already in lockfile, not introduced by this PR): `[important]` with note "not introduced by this PR - pre-existing vulnerability"
+- Always note whether the changed code actually calls the vulnerable API, or just has the package as a transitive dependency
+
 ## Step 3: Deep Review
 
 You are hunting for bugs. Not confirming code compiles. Not rubber-stamping.
@@ -88,6 +110,15 @@ Do NOT talk yourself out of findings. Investigate. Verify against code. Flag if 
 Zero issues on non-trivial change (>50 lines, multiple files, new logic) = you missed something. Go back.
 
 But NEVER invent findings. Three real catches > eight where half are wrong.
+
+### Intent-aware review
+
+If prep output contains **"## Change Intent"**, read it first. This tells you what the author intended.
+
+- If your finding **contradicts stated intent** (e.g., flagging a "deliberate workaround" the author already acknowledged), verify twice before flagging. Only flag if the issue is a security risk or data loss risk regardless of intent.
+- If author signals **intentional choices** ("by design", "deliberate", "known trade-off"), do not flag those specific patterns unless they introduce a security or correctness bug.
+- Use intent to **calibrate severity**: a bug in a hotfix is more urgent than the same bug in a draft refactor.
+- Use referenced issues to **understand context**: if the PR says "fixes #42", the review should verify the fix actually addresses what #42 describes.
 
 ### Investigation workflow
 
@@ -105,7 +136,10 @@ But NEVER invent findings. Three real catches > eight where half are wrong.
 5. **Dep vulnerabilities** - `[blocking]` if critical/high
 6. **Learned patterns** from prep - respect dismissals, boost accepted categories
 7. **Cross-file impact** - from analyze.py. Flag breaking API changes.
-8. **Test gaps** from prep - flag missing coverage, suggest specific tests
+8. **Removed exports** - from analyze.py. Any entry in "Removed Exports [BLOCKING]" is a confirmed breaking change with identified consumers. These are `[blocking]` findings.
+9. **Signature changes** - from analyze.py. When callers outside the changeset exist, flag as `[blocking]` unless the change is backward-compatible (e.g., optional param added with default).
+10. **CI failures** from prep - if "## CI Failures" section exists, cross-reference failed check names against changed files. If the diff likely caused the failure, flag as `[blocking]`. If unrelated (flaky test, infra issue), note briefly and move on.
+11. **Test gaps** from prep - flag missing coverage, suggest specific tests
 
 ### Verify (MANDATORY before presenting any finding)
 
@@ -118,14 +152,13 @@ Every finding must be defensible to a staff engineer who knows the codebase bett
 4. **Verify your fix** - uses APIs that exist here? Matches local patterns?
 5. **Check references** - if a ref contradicts your finding, drop it.
 
-**External doc search** (mcp__Ref tools, if available) only for:
-- Version-specific API not in reference files
-- Uncertain library/framework behavior
-- `[blocking]` hinging on framework semantics
+**When uncertain about framework/library behavior**: check the generated reference files first. If not covered there, note the uncertainty in the finding rather than guessing. Do NOT fetch external documentation during a live review - reference files were generated at init time for this purpose.
 
 **DROP if:** can't point to exact line, context handles it, fix doesn't match patterns, <90% confident, generic advice.
 
 **KEEP if:** exact line, verified context, fix matches patterns, you'd bet money, reference/linter confirms.
+
+**SECRET SAFETY:** Never reproduce credential values, API keys, tokens, or passwords in findings or fix code blocks. If flagging a hardcoded secret, reference the line number and key name only - replace the value with `[REDACTED]` in any quoted code.
 
 ### Finding format
 

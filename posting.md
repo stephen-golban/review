@@ -9,9 +9,19 @@
 Check profile's `Posting format`. Only ask if missing:
 > Post format? 1. Single comment 2. Inline comments 3. Skip
 
-## 2. Redact
+## 2. Redact (MANDATORY - run before preview)
 
-Scan all comment text for API keys, tokens, passwords, connection strings, secrets. Replace with `[REDACTED]`.
+Scan ALL content that will be posted - narrative text, code blocks, fix suggestions, inline comments, everything. No exceptions.
+
+Target patterns:
+- API keys, tokens, passwords, connection strings, private keys, auth headers
+- Any string matching: `(password|secret|api_key|apikey|token|private_key|auth_token|bearer)\s*[:=]\s*["'][^"']+["']`
+- AWS keys (`AKIA...`), GitHub tokens (`ghp_...`, `gho_...`), base64 JWT tokens
+- `.env` variable values, database connection URIs with credentials
+
+Replace matched values with `[REDACTED]`. Keep the key name visible, redact only the value.
+
+If a fix code block contains a secret from the original source, redact it in the fix too. Never reproduce credential values in posted comments.
 
 ## 3. Preview (MANDATORY)
 

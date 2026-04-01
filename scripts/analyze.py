@@ -178,15 +178,22 @@ def extract_context(file_path: str, hunk: Hunk, ctx_lines: int,
 # Pattern scanning
 # ---------------------------------------------------------------------------
 
-PATTERNS: Dict[str, List[Tuple[str, str, float]]] = {
+# Language-agnostic patterns (applied to all files)
+PATTERNS_COMMON: Dict[str, List[Tuple[str, str, float]]] = {
+    "security": [
+        (r"(password|secret|api_key|apikey|token|private_key)\s*[:=]\s*['\"][^'\"]{8,}['\"]",
+         "possible hardcoded secret", 0.8),
+    ],
+}
+
+# JS/TS patterns
+PATTERNS_JS: Dict[str, List[Tuple[str, str, float]]] = {
     "security": [
         (r"innerHTML\s*=", "innerHTML assignment - XSS risk", 0.7),
         (r"dangerouslySetInnerHTML", "dangerouslySetInnerHTML - verify sanitization", 0.6),
         (r"eval\s*\(", "eval() - code injection risk", 0.9),
         (r"`[^`]*\$\{[^}]*(req|request|params|query|body|input|user)",
          "user input in template literal - injection risk", 0.8),
-        (r"(password|secret|api_key|apikey|token|private_key)\s*[:=]\s*['\"][^'\"]{8,}['\"]",
-         "possible hardcoded secret", 0.8),
         (r"(exec|execSync|spawn)\s*\([^)]*\$\{",
          "command injection risk", 0.9),
     ],
@@ -219,25 +226,179 @@ PATTERNS: Dict[str, List[Tuple[str, str, float]]] = {
     ],
 }
 
+# Python patterns
+PATTERNS_PYTHON: Dict[str, List[Tuple[str, str, float]]] = {
+    "security": [
+        (r"subprocess\.(call|run|Popen)\s*\([^)]*shell\s*=\s*True",
+         "shell=True - command injection risk", 0.8),
+        (r"pickle\.loads?\(", "pickle deserialization - arbitrary code execution risk", 0.7),
+        (r"\beval\s*\(|\bexec\s*\(", "eval/exec - code injection risk", 0.9),
+        (r"cursor\.execute\s*\([^)]*(%s|%d|\.format\(|f['\"])",
+         "SQL injection via string formatting - use parameterized queries", 0.8),
+        (r"yaml\.load\s*\([^)]*(?!Loader)", "yaml.load without SafeLoader - code execution risk", 0.7),
+        (r"__import__\s*\(", "dynamic import - verify input is trusted", 0.6),
+    ],
+    "error-handling": [
+        (r"except\s*:", "bare except catches SystemExit and KeyboardInterrupt", 0.7),
+        (r"except\s+Exception\s*:", "broad except - consider specific exception types", 0.4),
+        (r"except\s*.*:\s*\n\s*(pass|\.\.\.)\s*$", "silent exception swallowing", 0.8),
+    ],
+    "resource": [
+        (r"open\s*\([^)]+\)(?!.*\bwith\b)", "file open without context manager - may leak handle", 0.5),
+        (r"\.connect\s*\(", "connection opened - verify close/context manager", 0.4),
+    ],
+    "async": [
+        (r"(?<!await\s)\basyncio\.\w+\s*\(", "possibly missing await on asyncio call", 0.5),
+        (r"(?<!await\s)\b\w+\.async_\w+\s*\(", "possibly missing await on async method", 0.4),
+    ],
+    "performance": [
+        (r"for\s+\w+\s+in\s+.*:\s*\n[^#]*\.(execute|fetchone|fetchall|query)\s*\(",
+         "DB query in loop - N+1 risk", 0.7),
+        (r"\+\s*=\s*.*\bin\s+(range|.*for)\b", "string concatenation in loop - use join()", 0.4),
+    ],
+}
+
+# Go patterns
+PATTERNS_GO: Dict[str, List[Tuple[str, str, float]]] = {
+    "security": [
+        (r"fmt\.Sprintf\s*\([^)]*%s[^)]*\).*(?:Query|Exec|Prepare)",
+         "SQL injection via Sprintf - use parameterized query", 0.8),
+        (r"http\.ListenAndServe\s*\(\s*\"", "plain HTTP listener - consider TLS", 0.5),
+        (r"template\.HTML\s*\(", "unescaped HTML insertion - XSS risk", 0.7),
+    ],
+    "error-handling": [
+        (r",\s*(?:err|_)\s*(?::?=)[^=].*\n(?!\s*if\s)", "error not checked after assignment", 0.6),
+        (r"_\s*=\s*\w+\.\w+\(", "error explicitly ignored with _", 0.5),
+    ],
+    "resource": [
+        (r"defer\s+\w+\.Close\(\)", "deferred close - verify error from Close is handled", 0.3),
+        (r"\.Lock\(\)(?!.*defer.*Unlock)", "Lock without deferred Unlock", 0.6),
+    ],
+    "async": [
+        (r"go\s+func\s*\(", "goroutine - verify no data race on shared variables", 0.4),
+        (r"go\s+\w+\(", "goroutine launched - check for leaked goroutines", 0.35),
+    ],
+    "performance": [
+        (r"for\s+.*range\s+.*\{[^}]*(\.Query|\.Exec|\.Get|\.Find)\s*\(",
+         "DB call in range loop - N+1 risk", 0.7),
+        (r"append\s*\(\s*\w+\s*,\s*\w+\.\.\.\s*\)", "append with spread in loop - consider pre-allocation", 0.4),
+    ],
+}
+
+# Rust patterns
+PATTERNS_RUST: Dict[str, List[Tuple[str, str, float]]] = {
+    "security": [
+        (r"unsafe\s*\{", "unsafe block - extra scrutiny required", 0.6),
+        (r"std::mem::transmute", "transmute - verify type safety", 0.8),
+        (r"from_raw_parts", "from_raw_parts - verify pointer validity and length", 0.7),
+    ],
+    "error-handling": [
+        (r"\.unwrap\(\)", "unwrap panics on None/Err - use ? or handle explicitly", 0.5),
+        (r"\.expect\s*\(", "expect panics with message - verify this can't fail in production", 0.4),
+    ],
+    "resource": [
+        (r"Box::leak\s*\(", "Box::leak - intentional memory leak, verify cleanup", 0.7),
+        (r"std::mem::forget\s*\(", "mem::forget - resource won't be dropped", 0.7),
+    ],
+    "async": [
+        (r"\.block_on\s*\(", "block_on inside async context may deadlock", 0.6),
+        (r"std::thread::spawn", "thread spawn - verify join or detach intent", 0.35),
+    ],
+}
+
+# Java/Kotlin patterns
+PATTERNS_JAVA: Dict[str, List[Tuple[str, str, float]]] = {
+    "security": [
+        (r"Statement\s*.*\.\s*execute\w*\s*\([^)]*\+",
+         "SQL concatenation - use PreparedStatement", 0.8),
+        (r"Runtime\.getRuntime\(\)\.exec\s*\(",
+         "command execution - verify input sanitization", 0.8),
+        (r"ObjectInputStream\s*\(", "deserialization - verify trusted source", 0.7),
+        (r"new\s+Random\s*\(\)", "java.util.Random not cryptographically secure - use SecureRandom", 0.5),
+    ],
+    "error-handling": [
+        (r"catch\s*\(\s*Exception\s+\w+\s*\)\s*\{\s*\}", "empty catch block", 0.9),
+        (r"catch\s*\(\s*Throwable\s", "catching Throwable - too broad", 0.7),
+        (r"\.printStackTrace\s*\(\s*\)", "printStackTrace in production - use proper logging", 0.6),
+    ],
+    "resource": [
+        (r"new\s+(FileInputStream|FileOutputStream|Connection|Socket)\s*\(",
+         "resource opened - verify try-with-resources or finally close", 0.5),
+        (r"DriverManager\.getConnection\s*\(",
+         "raw connection - verify close in finally block", 0.6),
+    ],
+}
+
+# Map file extensions to pattern sets
+_EXT_TO_PATTERNS: Dict[str, Dict[str, List[Tuple[str, str, float]]]] = {
+    ".js": PATTERNS_JS, ".jsx": PATTERNS_JS, ".ts": PATTERNS_JS, ".tsx": PATTERNS_JS,
+    ".mjs": PATTERNS_JS, ".cjs": PATTERNS_JS,
+    ".py": PATTERNS_PYTHON, ".pyw": PATTERNS_PYTHON,
+    ".go": PATTERNS_GO,
+    ".rs": PATTERNS_RUST,
+    ".java": PATTERNS_JAVA, ".kt": PATTERNS_JAVA, ".kts": PATTERNS_JAVA,
+}
+
+
+def _get_patterns_for_file(file_path: str) -> Dict[str, List[Tuple[str, str, float]]]:
+    """Get merged common + language-specific patterns for a file."""
+    ext = os.path.splitext(file_path)[1].lower()
+    lang_patterns = _EXT_TO_PATTERNS.get(ext, {})
+    # Merge common patterns with language-specific ones
+    merged: Dict[str, List[Tuple[str, str, float]]] = {}
+    for cat, pats in PATTERNS_COMMON.items():
+        merged[cat] = list(pats)
+    for cat, pats in lang_patterns.items():
+        if cat in merged:
+            merged[cat].extend(pats)
+        else:
+            merged[cat] = list(pats)
+    return merged
+
+
+# Keep backward-compatible reference for any external callers
+PATTERNS = PATTERNS_JS
+
 
 def scan_patterns(additions: List[Tuple[int, str]],
                   file_path: str) -> List[Dict[str, Any]]:
-    """Scan added lines for common bug patterns."""
+    """Scan added lines for language-aware bug patterns."""
+    patterns = _get_patterns_for_file(file_path)
+    if not patterns:
+        return []
     warnings: List[Dict[str, Any]] = []
+    # Detect comment prefix for this language
+    ext = os.path.splitext(file_path)[1].lower()
+    comment_prefixes = ("//", "#")
+    if ext in (".py", ".pyw", ".rb"):
+        comment_prefixes = ("#",)
+    elif ext in (".rs", ".go", ".java", ".kt", ".kts", ".js", ".jsx", ".ts", ".tsx"):
+        comment_prefixes = ("//",)
+
+    # Pattern to redact secret values in snippets
+    secret_redact = re.compile(
+        r"((?:password|secret|api_key|apikey|token|private_key|auth)\s*[:=]\s*)"
+        r"['\"][^'\"]+['\"]"
+    )
+
     for line_num, content in additions:
         stripped = content.strip()
-        if not stripped or stripped.startswith("//") or stripped.startswith("#"):
+        if not stripped or any(stripped.startswith(p) for p in comment_prefixes):
             continue
-        for category, pats in PATTERNS.items():
+        for category, pats in patterns.items():
             for regex, desc, conf in pats:
                 if re.search(regex, content):
+                    # Redact any secret values from snippet before including
+                    safe_snippet = secret_redact.sub(
+                        r'\1"[REDACTED]"', stripped[:120]
+                    )
                     warnings.append({
                         "file": file_path,
                         "line": line_num,
                         "category": category,
                         "description": desc,
                         "confidence": conf,
-                        "snippet": stripped[:120],
+                        "snippet": safe_snippet,
                     })
     return warnings
 
@@ -278,23 +439,86 @@ def find_exports(file_path: str, project_dir: str) -> List[str]:
     return exports
 
 
+def _exports_changed(fd: FileDiff) -> bool:
+    """Check if the file's exported API surface changed (not just internals)."""
+    export_patterns = [
+        r"export\s+", r"module\.exports", r"exports\.",  # JS/TS
+        r"^(?:def|class|async\s+def)\s+\w+",  # Python (top-level = public)
+        r"^func\s+[A-Z]", r"^type\s+[A-Z]",  # Go (uppercase = exported)
+        r"^pub\s+(?:fn|struct|enum|trait|type|mod|const)\s+",  # Rust
+    ]
+    combined = re.compile("|".join(export_patterns))
+    for hunk in fd.hunks:
+        for _, line in hunk.additions:
+            if combined.search(line):
+                return True
+        for _, line in hunk.deletions:
+            if combined.search(line):
+                return True
+    return False
+
+
+def _import_grep_pattern(module: str, file_path: str) -> Optional[str]:
+    """Build a language-specific import pattern for git grep -E."""
+    ext = os.path.splitext(file_path)[1].lower()
+    # Escape module name for regex
+    mod = re.escape(module)
+
+    if ext in (".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"):
+        # Match: import ... from '.../<module>', require('.../<module>')
+        return f"(import\\s.*from\\s+['\"].*/?{mod}['\"]|require\\(['\"].*/?{mod}['\"])"
+    elif ext in (".py", ".pyw"):
+        # Match: from <module> import, import <module>
+        return f"(from\\s+{mod}\\s+import|import\\s+{mod}\\b)"
+    elif ext == ".go":
+        # Match: ".../<module>"
+        return f'"{mod}"'
+    elif ext == ".rs":
+        # Match: use ...::module, mod module
+        return f"(use\\s+.*::{mod}|mod\\s+{mod}\\b)"
+    elif ext in (".java", ".kt", ".kts"):
+        # Match: import ....<module>
+        return f"import\\s+.*\\.{mod}\\b"
+    elif ext == ".rb":
+        # Match: require '.../<module>', require_relative
+        return f"require.*['\"].*/?{mod}['\"]"
+    return None
+
+
 def find_cross_file_impact(file_diffs: List[FileDiff],
                            project_dir: str) -> List[Dict[str, Any]]:
-    """Find files importing changed modules that aren't in the changeset."""
+    """Find files importing changed modules that aren't in the changeset.
+
+    Only searches when the exported API surface actually changed, and uses
+    language-specific import patterns to reduce false positives.
+    """
     changed = {fd.path for fd in file_diffs}
     impacts: List[Dict[str, Any]] = []
 
     for fd in file_diffs:
         if fd.is_deleted or fd.is_binary:
             continue
+        # Only bother with cross-file if exports changed
+        if not _exports_changed(fd):
+            continue
         exports = find_exports(fd.path, project_dir)
         if not exports:
             continue
+
         module = Path(fd.path).stem
+        pattern = _import_grep_pattern(module, fd.path)
+
+        if pattern:
+            # Use language-specific import pattern
+            cmd = ["git", "grep", "-lE", "--", pattern]
+        else:
+            # Fallback: coarse search for unknown languages
+            cmd = ["git", "grep", "-l", "--", module]
+
         try:
             r = subprocess.run(
-                ["git", "grep", "-l", "--", module],
-                capture_output=True, text=True, cwd=project_dir, timeout=10,
+                cmd, capture_output=True, text=True,
+                cwd=project_dir, timeout=10,
             )
             if r.returncode == 0 and r.stdout.strip():
                 importers = [
@@ -310,6 +534,184 @@ def find_cross_file_impact(file_diffs: List[FileDiff],
         except Exception:
             continue
     return impacts
+
+
+# ---------------------------------------------------------------------------
+# Deletion analysis and signature change detection
+# ---------------------------------------------------------------------------
+
+# Patterns that identify exported/public symbols being deleted
+_EXPORT_DEL_PATTERNS = [
+    # JS/TS
+    (r"export\s+(?:default\s+)?(?:function|class|const|let|var|type|interface|enum)\s+(\w+)",
+     {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"}),
+    (r"export\s*\{([^}]+)\}",
+     {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"}),
+    # Python (top-level defs are public)
+    (r"^(?:def|class|async\s+def)\s+(\w+)",
+     {".py", ".pyw"}),
+    # Go (uppercase = exported)
+    (r"^func\s+([A-Z]\w*)", {".go"}),
+    (r"^type\s+([A-Z]\w*)", {".go"}),
+    # Rust
+    (r"^pub\s+(?:fn|struct|enum|trait|type|const)\s+(\w+)", {".rs"}),
+    # Java/Kotlin
+    (r"^(?:public|protected)\s+(?:static\s+)?(?:class|interface|enum|void|int|String|\w+)\s+(\w+)",
+     {".java", ".kt", ".kts"}),
+]
+
+
+def find_removed_exports(file_diffs: List[FileDiff],
+                         project_dir: str) -> List[Dict[str, Any]]:
+    """Detect removed/renamed exports and find consumers not in changeset."""
+    changed = {fd.path for fd in file_diffs}
+    removed: List[Dict[str, Any]] = []
+
+    for fd in file_diffs:
+        if fd.is_binary or fd.is_new:
+            continue
+        ext = os.path.splitext(fd.path)[1].lower()
+
+        # Collect deleted symbol names from this file
+        deleted_names: Set[str] = set()
+        added_names: Set[str] = set()
+
+        for hunk in fd.hunks:
+            for _, line in hunk.deletions:
+                for pattern, exts in _EXPORT_DEL_PATTERNS:
+                    if ext not in exts:
+                        continue
+                    m = re.search(pattern, line)
+                    if m:
+                        # Handle grouped exports: export { a, b, c }
+                        text = m.group(1)
+                        for name in text.split(","):
+                            n = name.strip().split(" as ")[0].strip()
+                            if n and len(n) > 1:
+                                deleted_names.add(n)
+            for _, line in hunk.additions:
+                for pattern, exts in _EXPORT_DEL_PATTERNS:
+                    if ext not in exts:
+                        continue
+                    m = re.search(pattern, line)
+                    if m:
+                        text = m.group(1)
+                        for name in text.split(","):
+                            n = name.strip().split(" as ")[0].strip()
+                            if n and len(n) > 1:
+                                added_names.add(n)
+
+        # Only flag names that were deleted but NOT re-added (true removals)
+        truly_removed = deleted_names - added_names
+        if not truly_removed:
+            continue
+
+        # Find consumers of removed symbols
+        for name in list(truly_removed)[:5]:  # Cap to avoid excessive git grep
+            try:
+                r = subprocess.run(
+                    ["git", "grep", "-l", "--", name],
+                    capture_output=True, text=True,
+                    cwd=project_dir, timeout=10,
+                )
+                if r.returncode == 0 and r.stdout.strip():
+                    consumers = [
+                        f.strip() for f in r.stdout.strip().splitlines()
+                        if f.strip() not in changed and f.strip() != fd.path
+                    ]
+                    if consumers:
+                        removed.append({
+                            "file": fd.path,
+                            "symbol": name,
+                            "consumers": consumers[:10],
+                        })
+            except Exception:
+                continue
+
+    return removed
+
+
+# Patterns to extract function signatures
+_SIGNATURE_PATTERNS: List[Tuple[re.Pattern, Set[str]]] = [
+    # JS/TS: function foo(a, b) or const foo = (a, b) =>
+    (re.compile(r"(?:export\s+)?(?:async\s+)?function\s+(\w+)\s*\(([^)]*)\)"),
+     {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"}),
+    (re.compile(r"(?:export\s+)?(?:const|let|var)\s+(\w+)\s*=\s*(?:async\s+)?\(([^)]*)\)"),
+     {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"}),
+    # Python
+    (re.compile(r"(?:async\s+)?def\s+(\w+)\s*\(([^)]*)\)"),
+     {".py", ".pyw"}),
+    # Go
+    (re.compile(r"func\s+(?:\([^)]*\)\s+)?(\w+)\s*\(([^)]*)\)"),
+     {".go"}),
+    # Rust
+    (re.compile(r"(?:pub\s+)?(?:async\s+)?fn\s+(\w+)\s*\(([^)]*)\)"),
+     {".rs"}),
+    # Java/Kotlin
+    (re.compile(r"(?:public|private|protected)\s+(?:static\s+)?(?:\w+\s+)?(\w+)\s*\(([^)]*)\)"),
+     {".java", ".kt", ".kts"}),
+]
+
+
+def detect_signature_changes(file_diffs: List[FileDiff],
+                             project_dir: str) -> List[Dict[str, Any]]:
+    """Detect function signature changes (params added, removed, reordered)."""
+    changed_paths = {fd.path for fd in file_diffs}
+    sig_changes: List[Dict[str, Any]] = []
+
+    for fd in file_diffs:
+        if fd.is_binary or fd.is_new or fd.is_deleted:
+            continue
+        ext = os.path.splitext(fd.path)[1].lower()
+
+        # Extract old and new signatures from hunks
+        old_sigs: Dict[str, str] = {}  # name -> params string
+        new_sigs: Dict[str, str] = {}
+
+        for hunk in fd.hunks:
+            for _, line in hunk.deletions:
+                for pattern, exts in _SIGNATURE_PATTERNS:
+                    if ext not in exts:
+                        continue
+                    m = pattern.search(line)
+                    if m:
+                        old_sigs[m.group(1)] = m.group(2).strip()
+            for _, line in hunk.additions:
+                for pattern, exts in _SIGNATURE_PATTERNS:
+                    if ext not in exts:
+                        continue
+                    m = pattern.search(line)
+                    if m:
+                        new_sigs[m.group(1)] = m.group(2).strip()
+
+        # Find functions whose signatures changed
+        for name in old_sigs:
+            if name in new_sigs and old_sigs[name] != new_sigs[name]:
+                # Signature changed - check for callers not in changeset
+                callers: List[str] = []
+                try:
+                    r = subprocess.run(
+                        ["git", "grep", "-lE", "--", f"{name}\\s*\\("],
+                        capture_output=True, text=True,
+                        cwd=project_dir, timeout=10,
+                    )
+                    if r.returncode == 0 and r.stdout.strip():
+                        callers = [
+                            f.strip() for f in r.stdout.strip().splitlines()
+                            if f.strip() not in changed_paths and f.strip() != fd.path
+                        ]
+                except Exception:
+                    pass
+
+                sig_changes.append({
+                    "file": fd.path,
+                    "function": name,
+                    "old_params": old_sigs[name],
+                    "new_params": new_sigs[name],
+                    "callers_outside_changeset": callers[:10],
+                })
+
+    return sig_changes
 
 
 # ---------------------------------------------------------------------------
@@ -374,6 +776,8 @@ def format_output(
     warnings: List[Dict[str, Any]],
     impacts: List[Dict[str, Any]],
     ref_matches: List[Dict[str, str]],
+    removed_exports: Optional[List[Dict[str, Any]]] = None,
+    sig_changes: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     """Format review package as structured markdown."""
     out: List[str] = []
@@ -405,6 +809,29 @@ def format_output(
             imp = ", ".join(ci["imported_by"][:5])
             more = f" (+{len(ci['imported_by']) - 5})" if len(ci["imported_by"]) > 5 else ""
             out.append(f"- **{ci['changed_file']}** -> {imp}{more}")
+        out.append("")
+
+    # -- Removed exports (breaking changes) ----------------------------------
+    if removed_exports:
+        out.append("## Removed Exports [BLOCKING]\n")
+        out.append("Deleted symbols still referenced by files outside this changeset:\n")
+        for re_item in removed_exports:
+            consumers = ", ".join(re_item["consumers"][:5])
+            more = f" (+{len(re_item['consumers']) - 5})" if len(re_item["consumers"]) > 5 else ""
+            out.append(f"- **{re_item['file']}**: `{re_item['symbol']}` used by {consumers}{more}")
+        out.append("")
+
+    # -- Signature changes ---------------------------------------------------
+    if sig_changes:
+        out.append("## Signature Changes\n")
+        out.append("Function signatures changed - callers may need updating:\n")
+        for sc in sig_changes:
+            out.append(f"- **{sc['file']}**: `{sc['function']}({sc['old_params']})` -> `{sc['function']}({sc['new_params']})`")
+            if sc["callers_outside_changeset"]:
+                callers = ", ".join(sc["callers_outside_changeset"][:5])
+                out.append(f"  Callers NOT updated: {callers}")
+            else:
+                out.append(f"  All known callers are in this changeset")
         out.append("")
 
     # -- Reference matches --------------------------------------------------
@@ -480,21 +907,33 @@ def run_cmd(cmd: List[str], cwd: str, timeout: int = 30) -> Optional[str]:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description="Code review analysis engine")
-    ap.add_argument("--diff-cmd", required=True,
+    ap.add_argument("--diff-cmd", default=None,
                     help="Diff command (space-separated)")
+    ap.add_argument("--diff-file", default=None,
+                    help="Path to pre-fetched diff text (avoids re-running diff)")
     ap.add_argument("--project-dir", default=".")
     ap.add_argument("--skill-dir", default=None)
     ap.add_argument("--context-lines", type=int, default=15)
     ap.add_argument("--output", default=None,
                     help="Output path (default: stdout)")
+    ap.add_argument("--quick", action="store_true",
+                    help="Quick mode: skip context extraction, cross-file impact, "
+                         "and low-confidence patterns. For small/trivial changes.")
     args = ap.parse_args()
 
     project_dir = str(Path(args.project_dir).resolve())
     skill_dir = (str(Path(args.skill_dir).resolve()) if args.skill_dir
                  else str(Path(__file__).parent.parent.resolve()))
 
-    # Run diff
-    diff_text = run_cmd(args.diff_cmd.split(), project_dir, timeout=60)
+    # Get diff text: prefer pre-fetched file, fall back to running command
+    diff_text: Optional[str] = None
+    if args.diff_file:
+        try:
+            diff_text = Path(args.diff_file).read_text(errors="replace")
+        except Exception:
+            pass
+    if not diff_text and args.diff_cmd:
+        diff_text = run_cmd(args.diff_cmd.split(), project_dir, timeout=60)
     if not diff_text or not diff_text.strip():
         print("# Review Package\n\n**No diff output.**")
         sys.exit(0)
@@ -504,32 +943,47 @@ def main() -> None:
         print("# Review Package\n\n**No changed files in diff.**")
         sys.exit(0)
 
-    # Extract context
-    contexts: Dict[str, List[Optional[str]]] = {}
-    for fd in file_diffs:
-        if fd.is_binary or fd.is_deleted:
-            continue
-        contexts[fd.path] = [
-            extract_context(fd.path, h, args.context_lines, project_dir)
-            for h in fd.hunks
-        ]
+    quick = args.quick
 
-    # Pattern scan (added lines only)
+    # Extract context (skip in quick mode - use diff lines only)
+    contexts: Dict[str, List[Optional[str]]] = {}
+    if not quick:
+        for fd in file_diffs:
+            if fd.is_binary or fd.is_deleted:
+                continue
+            contexts[fd.path] = [
+                extract_context(fd.path, h, args.context_lines, project_dir)
+                for h in fd.hunks
+            ]
+
+    # Pattern scan (added lines only; quick mode = high confidence only)
     warnings: List[Dict[str, Any]] = []
     for fd in file_diffs:
         if fd.is_binary or fd.is_deleted:
             continue
         for hunk in fd.hunks:
             warnings.extend(scan_patterns(hunk.additions, fd.path))
+    if quick:
+        warnings = [w for w in warnings if w["confidence"] >= 0.7]
 
-    # Cross-file impact
-    impacts = find_cross_file_impact(file_diffs, project_dir)
+    # Cross-file impact (skip in quick mode)
+    impacts = find_cross_file_impact(file_diffs, project_dir) if not quick else []
 
-    # Reference matching
-    ref_matches = match_references(skill_dir, file_diffs)
+    # Removed exports - always run (catches breaking changes even in quick mode)
+    removed_exports = find_removed_exports(file_diffs, project_dir)
+
+    # Signature change detection (skip in quick mode)
+    sig_changes = detect_signature_changes(file_diffs, project_dir) if not quick else []
+
+    # Reference matching (skip in quick mode)
+    ref_matches = match_references(skill_dir, file_diffs) if not quick else []
 
     # Format
-    output = format_output(file_diffs, contexts, warnings, impacts, ref_matches)
+    output = format_output(
+        file_diffs, contexts, warnings, impacts, ref_matches,
+        removed_exports=removed_exports if removed_exports else None,
+        sig_changes=sig_changes if sig_changes else None,
+    )
 
     if args.output:
         Path(args.output).parent.mkdir(parents=True, exist_ok=True)
