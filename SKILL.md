@@ -1,11 +1,11 @@
 ---
 name: review
 description: |
-  Code review with project-aware initialization. Auto-detects tech stack,
-  generates project profile and version-specific reference docs on first run.
-  Reviews staged changes, PRs, branches, commits, files, or directories.
-  Runs linters, analyzes cross-file impact, detects test gaps, scans
-  dependencies for vulnerabilities, learns from feedback.
+  Fast, deep code review that outperforms automated review tools.
+  Auto-detects tech stack on first run, then reviews PRs, branches,
+  commits, staged changes, files, or directories. Runs linters,
+  detects test gaps, scans dependencies, learns from feedback.
+  Prioritizes finding real bugs over ceremony.
   Use when the user asks to review code, check a PR, audit a file,
   or runs /review, /review init, /review staged, /review <PR#>,
   /review branch, /review <commit>, /review <file/dir>.
@@ -76,62 +76,61 @@ If mode is `init` or `init-update`, read and follow `init-flow.md` in this skill
 
 # Review Flow
 
+## Speed Target
+
+Deliver the review within 90 seconds. Every operation that can run in parallel MUST run in parallel. Every stop that can be eliminated MUST be eliminated. Time spent on ceremony is time not spent finding bugs.
+
 ## Step 1: Prepare
 
-Run the prep script to collect all deterministic context in one call:
+Run the prep script:
 
 ```bash
 python3 <skill-dir>/scripts/prep.py \
   --mode <mode> --target "<target>" --project-dir <project-root>
 ```
 
-The script outputs: change summary, file clusters, risk factors, test gaps, suggested labels, profile context, diff command, reference files to read, learned patterns from feedback, previous review state.
+Read the output. If "No changes found", tell user and stop.
 
-Read the full output. If "No changes found", inform user and stop.
+## Step 2: Gather
 
-## Step 2: Get Diff and Source
+After reading prep output, collect everything needed for review. **Parallelize aggressively.**
+
+### Always (every review)
+
+Do these directly (no Agent overhead needed):
 
 1. Run the **diff command** from prep output
-2. Read each **changed source file** in full (skip binary, lockfiles, generated code)
-3. **MUST read every reference file** from the "Read These References" section of prep output. Resolve paths as `<skill-dir>/reference/<filename>`. Read each file in full using the Read tool.
-   - **STOP**: Do NOT proceed to Step 3 until every listed reference file has been read. If a file is missing, note it and continue with the rest.
-   - After reading, confirm to yourself: "Read N/N reference files." If the count doesn't match, go back and read the missing ones.
-4. For file/dir mode: read target files directly
+2. Read each **changed source file** in full (skip binaries, lockfiles, generated code)
+3. Read **reference files** from "Read These References" section. Only read refs that match languages in the changeset - if the changeset is pure TypeScript, skip unrelated refs like Rust or Python.
+4. For file/dir mode: read targets directly
 
-## Step 3: Run Analysis Tools
+### Conditional tools (launch via Agent when multiple apply)
 
-Each subsection below has an explicit trigger condition based on prep output. **If the trigger condition is met, you MUST run that tool.** Use the **Agent tool** to parallelize when multiple apply.
-
-### Linters (when prep output contains "## Linters")
-
-Run the detected linter against changed files. Parse the output and include findings.
-
-| Linter | Command | Output |
+| Tool | Trigger | What to run |
 |---|---|---|
-| eslint | `npx eslint --format json <files>` | JSON array |
-| biome | `npx biome check --reporter=json <files>` | JSON |
-| ruff | `ruff check --output-format json <files>` | JSON array |
-| prettier | `prettier --check <files>` | List of unformatted files |
-| clippy | `cargo clippy --message-format=json 2>&1` | JSON lines (filter to changed files) |
-| golangci-lint | `golangci-lint run --out-format json <files>` | JSON |
-| rubocop | `rubocop --format json <files>` | JSON |
+| Linter | Prep has "## Linters" | See linter table |
+| Dep audit | Prep has "## Dependency Changes Detected" | See audit table |
 
-If the tool isn't installed or fails, skip it silently.
+**Parallelism rules:**
+- Two+ tools triggered: launch each as a separate Agent task, proceed with direct reads while agents run
+- One tool triggered: run it directly, no Agent overhead
+- Zero triggered: skip entirely
 
-### Cross-File Impact (when prep output contains "## Cross-File Impact")
+### Linter commands
 
-Use Grep to find files that import the changed modules:
+| Linter | Command |
+|---|---|
+| eslint | `npx eslint --format json <files>` |
+| biome | `npx biome check --reporter=json <files>` |
+| ruff | `ruff check --output-format json <files>` |
+| prettier | `prettier --check <files>` |
+| clippy | `cargo clippy --message-format=json 2>&1` |
+| golangci-lint | `golangci-lint run --out-format json <files>` |
+| rubocop | `rubocop --format json <files>` |
 
-```
-For each changed source file, grep the project for import/require/use statements referencing it.
-Report files that import changed modules but aren't in the changeset.
-```
+Skip silently if tool isn't installed.
 
-Skip `node_modules`, `.git`, `dist`, `build`, `target`, `vendor`, `__pycache__`.
-
-### Dependency Vulnerabilities (when prep output contains "## Dependency Changes Detected")
-
-Run the appropriate audit tool:
+### Dependency audit commands
 
 | Dep File | Command |
 |---|---|
@@ -140,55 +139,169 @@ Run the appropriate audit tool:
 | requirements.txt | `pip-audit --format json` |
 | go.mod | `govulncheck -json ./...` |
 
-If no audit tool available, skip with a note.
+Skip if no audit tool available.
 
-## Step 4: Analyse
+## Step 3: Deep Review
 
-### 4a. Change Walkthrough
+You are hunting for bugs. Not confirming the code compiles. Not rubber-stamping.
 
-Using file clusters and changed functions from prep output:
-1. Write a 2-3 sentence summary of what changed and why
-2. Group related files and describe each group's purpose in one line
-3. If branch/PR mode and prep output contains "## Commit History": read the commit progression to understand the developer's intent and iteration order. Use this to:
-   - Distinguish intentional design choices from oversights (e.g., a file refactored in commit 2 after being added in commit 1 - the final state is intentional)
-   - Avoid flagging patterns that were deliberately introduced (commit message says "switch to X approach")
-   - Identify when a later commit may have broken something that worked in an earlier commit
+### Mindset
 
-### 4b. Review Protocol
+**Assume the code has defects. Your job is to find them.**
 
-**For each changed file**, apply the following checks **in order**. Do not skip items - if a check has no findings for a file, move to the next check.
+Do NOT talk yourself out of findings. If something looks suspicious, investigate it. Verify it against the code. If it holds up, flag it.
 
-1. **Blocking patterns** - compare each change against every pattern in the "Blocking Patterns (from profile)" section of prep output. Any match is `[blocking]`.
-2. **Priority focus areas** - apply extra scrutiny to changes touching areas listed in "Priority Focus (from profile)" section of prep output.
-3. **Generated reference files** - for each finding you consider raising, check whether the reference files you read in Step 2 contain a relevant rule. Cite the reference if so.
-4. **Linter findings** (if Step 3 produced them) - deduplicate against your own findings, promote genuine issues.
-5. **Cross-file impact** (if Step 3 produced results) - flag dependents that import changed modules but are not in the changeset.
-6. **Test coverage gaps** from prep "Test Coverage Gaps" section - suggest specific test cases.
-7. **Dependency vulnerabilities** (if Step 3 produced results) - `[blocking]` if critical/high severity.
-8. **Learned patterns** from prep "Learned Patterns" section - suppress previously dismissed findings, apply corrections the user has taught.
-9. **Your own knowledge** of detected languages, frameworks, and their detected versions.
+If you found zero issues on a non-trivial change (>50 lines, multiple files, or new logic), you probably missed something. Go back and look harder - trace execution paths, check edge cases, look at what WASN'T changed that should have been.
 
-## Step 5: Validate Findings
+But NEVER invent findings to fill space. Three verified, real catches are worth more than eight observations where half are wrong. Your credibility is the product. Every bogus finding costs trust that takes ten good findings to rebuild.
 
-**STOP: Do NOT present findings to the user, post to a PR, or proceed to Step 6 until validation is complete for every `[blocking]` and `[important]` finding.**
+### Execution tracing
 
-For each `[blocking]` or `[important]` finding:
+For each significant changed function or code block, trace the execution path mentally:
 
-1. If the finding came from a reference file → use the source link already in that file. Confirmed.
-2. If no source link exists → search via `mcp__Ref__ref_search_documentation` or `mcp__Ref__ref_read_url` to verify the claim is correct for the detected version.
-3. **Confirmed** → keep. Attach source link + fix snippet.
-4. **Wrong/outdated** → drop silently. Do NOT include it in the report.
-5. **Inconclusive** (cannot confirm or deny after searching) → keep with `(unverified)` marker.
+1. **Inputs** - what calls this? What are all possible input shapes, including adversarial ones?
+2. **Boundaries** - what happens with null, undefined, empty string, zero, negative, NaN, too-large, malformed, duplicate?
+3. **Concurrency** - what if this is called twice simultaneously? Rapidly? While another operation is mid-flight?
+4. **State** - what state changes? Can state be left inconsistent if this throws halfway through?
+5. **Errors** - what can throw? Are all error paths handled? What does the caller see on failure?
+6. **Resources** - are connections, handles, listeners, subscriptions, timers released on ALL paths including error and early-return?
 
-**Validation is NOT required for**: missing await, null deref, unused vars, hardcoded secrets, linter-reported findings. These are self-evident from the code.
+### Bug patterns to actively hunt
 
-After validation, re-check: does the finding still apply given the full context of the change (commit history, surrounding code, other files in the changeset)? If not, drop it.
+Check every changed file against these. Do not skip any category.
 
-## Step 6: Report
+**Logic bugs:**
+- Off-by-one in loops, slice, substring, array access, pagination
+- Wrong comparison (== vs ===, > vs >=, && vs ||)
+- Missing break/return causing fallthrough
+- Incorrect argument order in function calls
+- Stale closures capturing variables by reference
 
-Check report mode from prep output. **If mode is humanized, skip Standard Mode entirely - go directly to Humanized Mode below.** Do NOT read the Standard Mode template as a starting point for humanized output.
+**Null safety:**
+- Optional chaining that assumes non-null downstream
+- Nullable returns used without null checks
+- Destructuring with missing properties
+- Array access without bounds check
 
-**For PR mode**: after generating the review, go to the "Deliver" subsection below to preview and post. Do NOT ask "want me to post?" - show the preview directly.
+**Async and concurrency:**
+- Missing await on async calls
+- Race conditions from shared mutable state
+- Promise.all with dependent mutations
+- Unhandled promise rejections
+- TOCTOU (check-then-act without atomicity)
+
+**Resource management:**
+- addEventListener without removeEventListener
+- setInterval/setTimeout without cleanup
+- Database connections not released on error paths
+- Stream/file handles not closed in finally blocks
+- Subscriptions (RxJS, event emitters) without unsubscribe
+
+**Error handling:**
+- Empty catch blocks or `.catch(() => {})`
+- Catching too broadly (catch Exception vs specific types)
+- Errors logged but not re-thrown or handled
+- Missing error handling on external calls (API, DB, file I/O)
+- Default values masking real failures
+
+**Security:**
+- SQL/NoSQL injection (string interpolation in queries)
+- XSS (unescaped user input in HTML/templates)
+- Path traversal (user input in file paths)
+- Command injection (user input in shell commands)
+- Auth bypass (missing auth checks on endpoints)
+- Secrets in source code
+- SSRF (user-controlled URLs in server-side requests)
+- Prototype pollution (object spread/merge with user input)
+- Insecure deserialization
+
+**Performance:**
+- N+1 queries (DB call inside a loop)
+- Unbounded loops or recursion
+- Missing pagination on list endpoints
+- Blocking I/O on hot paths
+- Unnecessary re-renders or recomputation
+- Large objects passed by value when reference would suffice
+- Missing memoization on expensive pure functions
+
+**Incomplete changes:**
+- Imports of deleted/renamed modules
+- Half-migrated patterns (old + new style in same file)
+- Dead code left from refactor
+- Missing updates to related files (types, tests, docs, configs)
+- Breaking changes to exported APIs without updating consumers
+
+### Cross-reference with project context
+
+Apply in this order, but do NOT treat this as a checklist to plod through. Use it as augmentation for your analysis:
+
+1. **Blocking patterns** from profile - any match is `[blocking]`
+2. **Priority focus areas** from profile - extra scrutiny
+3. **Reference file rules** - cite source links when applicable
+4. **Linter results** - deduplicate against your findings, promote real issues
+5. **Dep vulnerabilities** - `[blocking]` if critical/high severity
+6. **Learned patterns** from feedback - respect previous dismissals
+7. **Cross-file impact** - use Grep to find files importing changed modules that are NOT in the changeset. Flag breaking changes to exported APIs.
+8. **Test gaps** from prep output - flag missing test coverage for new logic, suggest specific test cases
+
+### Verify (MANDATORY before any finding is presented)
+
+You are putting your name on this review. Every finding you present must be defensible to a staff engineer who knows the codebase better than you. If you'd be embarrassed when the developer replies "that's not how this works", you haven't verified enough.
+
+**For EVERY finding, before including it:**
+
+1. **Re-read the actual lines** - not from memory, from the diff and source you read in Step 2. Confirm the code actually does what you think it does.
+2. **Check surrounding context** - read 20-30 lines above and below. Is there a guard clause you missed? A comment explaining why? A try/catch wrapping it? A type that makes the null case impossible?
+3. **Check callers/consumers** - if you're flagging an API change or missing validation, grep to see how this code is actually called. Maybe the caller already validates. Maybe there's only one caller and it always passes valid input.
+4. **Verify your fix compiles** - mentally trace your suggested fix. Does it use APIs that actually exist in this codebase? Does it match the patterns used elsewhere in the project? Would it introduce a new bug?
+5. **Check against reference files** - if a reference file covers this topic, use its rules and source links. If your finding contradicts a reference file rule, drop your finding.
+
+**When to do an external doc search** (use `mcp__Ref__ref_search_documentation` or `mcp__Ref__ref_read_url`):
+- You're flagging a version-specific API concern (e.g., "this method was deprecated in React 19") and the reference files don't cover it
+- You're unsure whether a library/framework behaves the way you think it does
+- The finding is `[blocking]` and hinges on framework-specific behavior you're not 100% certain about
+
+Do NOT search docs for things you can verify from the code itself. Most findings should be verifiable by re-reading the source.
+
+**Drop a finding if:**
+- You can't point to the exact line that's wrong
+- The surrounding context shows it's handled
+- Your fix doesn't work with the codebase's patterns
+- You're less than 90% confident after re-reading the code
+- It's generic advice that doesn't reflect THIS specific code ("consider adding error handling" when you can't say WHAT error on WHAT line)
+
+**Keep a finding if:**
+- You can point to the exact line
+- You verified the context doesn't handle it
+- Your fix matches the codebase's patterns
+- You'd bet money this is a real issue
+- A reference file or linter confirms it
+
+The goal is zero bullshit. Fewer verified findings beat many unverified ones. A review with 3 real catches earns trust. A review with 8 findings where 4 are wrong destroys it.
+
+### Finding format
+
+Every finding MUST include ALL of these:
+
+1. **File:line** - exact location
+2. **What** - the issue in one sentence
+3. **Why** - what breaks in production (one sentence)
+4. **Fix** - a concrete code change (actual code in a fenced block, not "consider doing X")
+5. **Confidence** - only for `[blocking]` and `[important]`: state what you verified (e.g., "verified: no null check in callers X and Y", "verified: matches reference rule in react-19.md")
+
+Findings without a fix are incomplete. If you genuinely cannot suggest a fix, explain exactly why.
+
+Severity levels:
+- `[blocking]` - will cause bugs, data loss, security vulnerabilities, or crashes in production. Must be verified against code context. Must have a working fix.
+- `[important]` - significant correctness or quality concern, should fix before merge. Must be verified against code context.
+- `[nit]` - style, naming, minor improvement. Self-evident from the code, no deep verification needed.
+- `[suggestion]` - alternative approach worth considering. Explain the tradeoff, not just "consider X".
+
+## Step 4: Deliver
+
+Check report mode from prep output. **If mode is humanized, skip Standard Mode entirely - go directly to Humanized Mode below.**
+
+**For PR mode**: generate the review internally, then go to PR Posting. Do NOT output the review separately before the preview.
 
 ### Standard Mode
 
@@ -202,12 +315,12 @@ Check report mode from prep output. **If mode is humanized, skip Standard Mode e
 ## Issues Found
 
 ### [blocking]
-1. **file.ts:42** - Description. Why it matters.
+1. **file.ts:42** - Description. Impact.
    ```ts
    // Fix
    <corrected code>
    ```
-   Source: <URL>
+   Source: <URL if from reference>
 
 ### [important] / [nit] / [suggestion]
 ...
@@ -216,13 +329,14 @@ Check report mode from prep output. **If mode is humanized, skip Standard Mode e
 - <specific test cases for uncovered changes>
 ```
 
-Omit empty sections. Zero issues → "No issues found."
-
-For complex changes (complexity > 0.5 or files > 5), include a Mermaid diagram:
+Omit empty sections. For complex changes (complexity > 0.5 or files > 5), include a Mermaid diagram:
 ```mermaid
 graph LR
   A[file.ts] --> B[handler.ts] --> C[db.ts]
 ```
+
+Zero issues on a trivial change (typo fix, config tweak) -> "No issues found."
+Zero issues on a non-trivial change -> you didn't look hard enough. Go back to Step 3.
 
 ### Humanized Mode
 
@@ -234,7 +348,7 @@ PR review comments must look fully human-written. Your team lead flagged AI-augm
 - Severity labels (`[blocking]`, `[important]`, `[nit]`)
 - Code block fences for fix suggestions (use inline backticks only)
 - Summary tables or structured formatting of any kind
-- The em dash character (the long unicode dash, U+2014) - it looks drawn/AI-generated. Use the regular hyphen-minus only.
+- The em dash character (the long unicode dash, U+2014) - use the regular hyphen-minus only
 - Compliments, positive padding, or filler: "solid", "clean", "great", "nice", "looks good to ship", "no issues", "LGTM", "well done", "good job", "no security concerns"
 - AI tells: "heads up", "nit:", "it's worth noting", "consider", "ensure", "I noticed that", "I'd suggest", "one thing to be aware of", "just worth knowing", "just be aware", "be aware", "worth a look", "worth noting", "is that the intent"
 - Multi-clause compound sentences - keep sentences short, one or two per thought max
@@ -265,103 +379,71 @@ PR review comments must look fully human-written. Your team lead flagged AI-augm
 
 > auth.ts around line 42 - user input goes straight into the query without validation, sql injection risk. wrapping it in `sanitizeInput()` fixes it. the retry logic in `fetchData` doesn't backoff either so if upstream is down you'll hammer it.
 
-Zero issues → "looks clean, nothing jumped out."
+Zero issues -> "looks clean, nothing jumped out." (Only on truly trivial changes. On non-trivial changes, find something.)
 
-**PR mode**: do NOT output the review text here. Generate it internally, then go to Deliver below where it will be shown as the preview with file:line targets. The preview IS the review - showing it twice is redundant.
+**PR mode**: generate review internally, go straight to PR Posting below. Do NOT show the review text separately before the preview.
 
-### Deliver
+### PR Posting
 
-**All non-PR modes**: the report shown above IS the delivery. Skip to Step 7.
+**If `Offer PR posting: no`** (or field missing): show review in conversation only. Skip to Wrap-up.
 
-**PR mode with `Offer PR posting: no`** (or field missing): show the review in conversation only. Skip to Step 7.
+**If `Offer PR posting: yes`**: preview, confirm, post.
 
-**PR mode with `Offer PR posting: yes`**: preview, confirm, then post. **The preview IS the review** - do NOT show a separate prose review before the preview. Go straight to showing the inline comments or single comment body below.
+**1. Resolve format**: Check profile's `Posting format` field. If it says `single` or `inline`, use that. Only ask if missing:
 
-**1. Resolve format**: Check the profile's `Posting format` field. If it specifies `single` or `inline`, use that - do NOT ask the user again. Only ask if the field is missing or empty:
+> Post format? 1. Single comment 2. Inline comments 3. Skip
 
-> Post to PR? Choose format:
-> 1. Single comment - full review as one summary
-> 2. Inline comments - each finding on the relevant line
-> 3. Skip - don't post
+**2. Redact**: Scan all comment text for API keys, tokens, passwords, connection strings, private keys, `.env` values. Replace with `[REDACTED]`.
 
-**2. Redact secrets**: Before previewing or posting, scan all comment text for patterns matching secrets (API keys, tokens, passwords, connection strings, private keys, `.env` values). Replace any detected secret with `[REDACTED]`.
+**3. Preview (MANDATORY)**:
 
-**3. Preview (MANDATORY - do NOT ask "want me to post?" without showing what will be posted)**:
-
-For **inline mode in humanized report**, present each comment as a separate humanized prose snippet with its file:line target. Each comment is independent - do not write one big block and split it later. Write each comment individually:
-
+For **inline mode**, show each comment with file:line target:
 ```
-**posthog-network-scrubber.ts:30**
-> `BODY_DENY_KEYWORDS` has "auth" which substring-matches "author", "authority" etc - if you see over-redacted recordings that's why.
+**file.ts:30**
+> finding text here
 
-**posthog-network-scrubber.ts:49**
-> `PII_FIELDS` has first/last name but not bare `name` - full names in a single field pass through.
+**file.ts:49**
+> another finding here
 ```
 
 For **single comment mode**, show the full comment body.
 
-The user MUST see exactly what will appear on GitHub before any posting happens. Combine related findings into one comment where they touch the same concern.
+Combine related findings touching the same concern into one comment.
 
-**4. Confirm**: Ask: "post these? (yes / edit / skip)"
+**4. Confirm**: "post these? (yes / edit / skip)"
 
-**STOP: WAIT for user confirmation before posting anything.**
+**STOP: Wait for confirmation before posting.**
 
-**5. Post** based on resolved format:
-- **Single comment**: `gh pr review <PR#> --comment --body "..."`
-- **Inline comments**: post each finding individually via `gh api repos/{owner}/{repo}/pulls/{pr}/comments --method POST -f body="<finding>" -f path="<file>" -f commit_id="$(gh pr view <PR#> --json headRefOid -q .headRefOid)" -F line=<line>`. One comment per API call.
-- **Skip**: do nothing
+**5. Post**:
+- **Single**: `gh pr review <PR#> --comment --body "..."`
+- **Inline**: `gh api repos/{owner}/{repo}/pulls/{pr}/comments --method POST -f body="<finding>" -f path="<file>" -f commit_id="$(gh pr view <PR#> --json headRefOid -q .headRefOid)" -F line=<line>` per finding.
 
-**6. Apply labels** (only if posting was done): `gh pr edit <PR#> --add-label "<labels>"` using suggested labels from prep output.
+**6. Labels**: `gh pr edit <PR#> --add-label "<labels>"` from prep output.
 
-## Step 7: Apply Fixes (Optional)
+### Wrap-up
 
-After the report (and after posting if PR mode), offer to apply fixes **only if there are actionable findings**. If there are zero findings, skip directly to Step 8.
+After delivering the review (and posting if PR mode), handle ALL post-delivery actions in **ONE** prompt. Do NOT split into multiple sequential stops.
 
-In humanized mode: "want me to fix any of these?"
-In standard mode: "Apply fixes? (all, #1 #3, or skip)"
+In standard mode:
+> Apply fixes? Dismiss findings? (numbers to fix, numbers to dismiss, or done)
 
-Use Edit to apply directly.
+In humanized mode:
+> want me to fix any of these? anything to dismiss?
 
-**STOP: WAIT for the user's response before proceeding to Step 8.** Do NOT combine this prompt with the feedback prompt. Handle the user's fix request (or skip) completely before moving on.
+Then process the response:
 
-## Step 8: Record
+1. **Apply fixes** with Edit tool if requested
+2. **Record dismissals** to `feedback.jsonl`:
+   ```json
+   {"id": "<uuid>", "timestamp": "<ISO8601>", "type": "dismiss", "finding": "<desc>", "file_pattern": "<*.ext>", "reason": "<reason>"}
+   ```
+3. **Save review state** for PR/branch modes to `review-state.json`. **MUST Read then Edit, NEVER Write on existing file** (destroys other entries):
+   ```json
+   {"<mode>/<target>": {"last_reviewed_sha": "<HEAD>", "last_review_date": "<ISO8601>", "findings_count": N, "previous_findings": ["summary1"]}}
+   ```
+4. **Log to history** - append to `review-history.jsonl`:
+   ```json
+   {"timestamp": "<ISO8601>", "mode": "<mode>", "target": "<target>", "files_changed": N, "findings": {"blocking": N, "important": N, "nit": N, "suggestion": N}}
+   ```
 
-### Save review state (for incremental reviews next time)
-
-For PR/branch modes, update `review-state.json` in the skill directory.
-
-Entry format:
-```json
-{"<mode>/<target>": {"last_reviewed_sha": "<HEAD>", "last_review_date": "<ISO8601>", "findings_count": N, "previous_findings": ["summary1", "summary2"]}}
-```
-
-**CRITICAL: MUST use Read then Edit, NOT Write.** The file contains entries from previous reviews of other branches/PRs. Using Write destroys all previous review state.
-
-Steps:
-1. **Read** `review-state.json` with the Read tool first.
-2. If the file does NOT exist, create it with Write containing only the new entry.
-3. If the file DOES exist, use **Edit** (not Write) to add/update the entry for `<mode>/<target>`, preserving ALL other entries.
-4. **NEVER use Write on an existing review-state.json** - this has caused data loss of previous review entries.
-
-### Log to history
-
-Append one JSON line to `review-history.jsonl` in the skill directory:
-
-```json
-{"timestamp": "<ISO8601>", "mode": "<mode>", "target": "<target>", "files_changed": N, "findings": {"blocking": N, "important": N, "nit": N, "suggestion": N}}
-```
-
-### Collect feedback
-
-After Step 7 is complete (fix application handled or skipped), ask:
-
-> Dismiss any findings? (# to dismiss, or skip)
-
-**STOP: WAIT for the user's response.** Do NOT combine this prompt with the delivery/posting prompt. Process dismissals before ending.
-
-For each dismissed finding, append to `feedback.jsonl` in the skill directory:
-
-```json
-{"id": "<uuid>", "timestamp": "<ISO8601>", "type": "dismiss", "finding": "<description>", "file_pattern": "<*.ext>", "reason": "<user explanation>"}
-```
-
+If user says "done" or "skip", still do steps 3 and 4 silently. The review is complete.
